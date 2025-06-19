@@ -89,6 +89,14 @@ at::Tensor malloc_tensor(const std::vector<int64_t>& shape, c10::ScalarType dtyp
       at::TensorOptions().dtype(dtype).device(device));
 }
 
+int64_t multicast_ptr(at::Tensor tensor) {
+  void *mc_ptr = nvshmemx_mc_ptr(NVSHMEM_TEAM_WORLD, (void *) tensor.data_ptr());
+  if (mc_ptr == nullptr) {
+    AT_ERROR("nvshmemx_mc_ptr failed.");
+  }
+  return reinterpret_cast<int64_t>(mc_ptr);
+}
+
 void barrier_all() { nvshmem_barrier_all(); }
 
 void barrier_all_on_current_stream() {
@@ -108,6 +116,117 @@ void alltoall(at::Tensor dest, at::Tensor source) {
 
 void fake_alltoall(at::Tensor dest, at::Tensor source) {}
 
+void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
+  TORCH_CHECK(dest.is_contiguous(), "dest must be contiguous");
+  TORCH_CHECK(source.is_contiguous(), "source must be contiguous");
+  TORCH_CHECK(dest.scalar_type() == source.scalar_type(), "dest and source must have the same dtype");
+  
+  // Add validation and conversion
+  TORCH_CHECK(nelems >= 0, "nelems must be non-negative, got ", nelems);
+  TORCH_CHECK(nelems <= SIZE_MAX, "nelems too large: ", nelems, " > ", SIZE_MAX);
+  size_t nelems_size_t = static_cast<size_t>(nelems);
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  
+  switch (dest.scalar_type()) {
+    // Signed integers
+    case at::kChar:  // int8
+      NVSHMEMCHECK(nvshmemx_int8_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (int8_t *)dest.data_ptr(), 
+          (int8_t *)source.data_ptr(), 
+          nelems_size_t,  // Use the converted value
+          stream
+      ));
+      break;
+    case at::kShort:  // int16
+      NVSHMEMCHECK(nvshmemx_int16_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (int16_t *)dest.data_ptr(), 
+          (int16_t *)source.data_ptr(), 
+          nelems_size_t,  // Use the converted value
+          stream
+      ));
+      break;
+    case at::kInt:  // int32
+      NVSHMEMCHECK(nvshmemx_int32_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (int32_t *)dest.data_ptr(), 
+          (int32_t *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    case at::kLong:  // int64
+      NVSHMEMCHECK(nvshmemx_int64_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (int64_t *)dest.data_ptr(), 
+          (int64_t *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    // constexpr auto kUInt8 = at::kByte;
+    // constexpr auto kUInt16 = at::kUInt16;
+    // constexpr auto kUInt32 = at::kUInt32;
+    // constexpr auto kUInt64 = at::kUInt64;
+    // Unsigned integers
+    case at::kByte:  // uint8
+      NVSHMEMCHECK(nvshmemx_uint8_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (uint8_t *)dest.data_ptr(), 
+          (uint8_t *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    
+    
+    // Floating point types
+    case at::kHalf:  // float16
+      NVSHMEMCHECK(nvshmemx_half_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (__half *)dest.data_ptr(), 
+          (__half *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    case at::kFloat:  // float32
+      NVSHMEMCHECK(nvshmemx_float_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (float *)dest.data_ptr(), 
+          (float *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    case at::kDouble:  // float64
+      NVSHMEMCHECK(nvshmemx_double_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (double *)dest.data_ptr(), 
+          (double *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    case at::kBFloat16:  // bfloat16
+      NVSHMEMCHECK(nvshmemx_bfloat16_sum_reduce_on_stream(
+          NVSHMEM_TEAM_WORLD, 
+          (nv_bfloat16 *)dest.data_ptr(), 
+          (nv_bfloat16 *)source.data_ptr(), 
+          nelems_size_t,
+          stream
+      ));
+      break;
+    
+    default:
+      TORCH_CHECK(false, "Unsupported dtype for nvshmem_sum_reduce: ", dest.scalar_type());
+  }
+}
+
+void fake_sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {}
+
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("nvshmem_get_unique_id", &get_unique_id);
   m.def("nvshmem_unique_id_size", &unique_id_size);
@@ -121,6 +240,10 @@ TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("nvshmem_alltoall(Tensor! dest, Tensor src) -> ()");
   m.impl("nvshmem_alltoall", c10::kCUDA, &alltoall);
   m.impl("nvshmem_alltoall", c10::kMeta, &fake_alltoall);
+  m.def("nvshmem_sum_reduce(Tensor! dest, Tensor src, int nelems) -> ()");
+  m.impl("nvshmem_sum_reduce", c10::kCUDA, &sum_reduce);
+  m.impl("nvshmem_sum_reduce", c10::kMeta, &fake_sum_reduce);
+  m.def("nvshmem_multicast_ptr", &multicast_ptr);
 };
 
 }  // namespace
