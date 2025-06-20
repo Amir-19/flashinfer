@@ -240,11 +240,11 @@ void allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm,
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  cudaMemcpy(source_symm.data_ptr(), source_local.data_ptr(), nelems * source_local.element_size(),cudaMemcpyDefault);
+  cudaMemcpyAsync(source_symm.data_ptr(), source_local.data_ptr(), nelems * source_local.element_size(),cudaMemcpyDefault, stream);
   cudaStreamSynchronize(stream);
   barrier_all_on_current_stream();
   sum_reduce(dest_symm, source_symm, nelems);
-  cudaMemcpy(dest_local.data_ptr(), dest_symm.data_ptr(), nelems * dest_local.element_size(),cudaMemcpyDefault);
+  cudaMemcpyAsync(dest_local.data_ptr(), dest_symm.data_ptr(), nelems * dest_local.element_size(),cudaMemcpyDefault, stream);
   nvshmem_quiet();
 }
 

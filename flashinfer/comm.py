@@ -1166,7 +1166,6 @@ class MNNVLAllReduce:
             inp.numel(),
         )
 
-
     def all_reduce_2(self, inp: torch.Tensor, out: torch.Tensor) -> None:
         numel = inp.numel()
         input_buffer = self.symm_buffer_input.narrow(0, 0, numel)
