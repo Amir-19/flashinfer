@@ -34,6 +34,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
     hidden_dim = 8192
     test_loop = 10
     tensor_dtype = torch.bfloat16
+    #tensor_dtype = torch.float16
     mnnvl_allreduce = comm.MNNVLAllReduce(
         rank_id,
         num_ranks,
@@ -45,7 +46,6 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
     
     try:
         for batch_size in batch_sizes:
-            print(rank_id, batch_size)
             for _ in range(test_loop):
                 tensor_size = batch_size * hidden_dim
                 inp1 = torch.randint(1,16, [tensor_size], dtype=tensor_dtype, device=device)

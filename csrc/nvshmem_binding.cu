@@ -182,8 +182,6 @@ void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
           stream
       ));
       break;
-    
-    
     // Floating point types
     case at::kHalf:  // float16
       NVSHMEMCHECK(nvshmemx_half_sum_reduce_on_stream(
@@ -215,8 +213,8 @@ void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
     case at::kBFloat16:  // bfloat16
       NVSHMEMCHECK(nvshmemx_bfloat16_sum_reduce_on_stream(
           NVSHMEM_TEAM_WORLD, 
-          (nv_bfloat16 *)dest.data_ptr(), 
-          (nv_bfloat16 *)source.data_ptr(), 
+          (__nv_bfloat16 *)dest.data_ptr(), 
+          (__nv_bfloat16 *)source.data_ptr(), 
           nelems_size_t,
           stream
       ));
@@ -245,6 +243,7 @@ void allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm,
   barrier_all_on_current_stream();
   sum_reduce(dest_symm, source_symm, nelems);
   cudaMemcpyAsync(dest_local.data_ptr(), dest_symm.data_ptr(), nelems * dest_local.element_size(),cudaMemcpyDefault, stream);
+  cudaStreamSynchronize(stream);
   nvshmem_quiet();
 }
 
