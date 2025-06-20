@@ -104,6 +104,8 @@ void barrier_all_on_current_stream() {
   nvshmemx_barrier_all_on_stream(stream);
 }
 
+void quiet() { nvshmem_quiet(); }
+
 void alltoall(at::Tensor dest, at::Tensor source) {
   TORCH_CHECK(dest.is_contiguous(), "dest must be contiguous");
   TORCH_CHECK(source.is_contiguous(), "source must be contiguous");
@@ -227,6 +229,27 @@ void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
 
 void fake_sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {}
 
+void allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm, at::Tensor dest_local, at::Tensor source_local, int64_t nelems) {
+  TORCH_CHECK(dest_symm.is_contiguous(), "dest_symm must be contiguous");
+  TORCH_CHECK(source_symm.is_contiguous(), "source_symm must be contiguous");
+  TORCH_CHECK(dest_local.is_contiguous(), "dest_local must be contiguous");
+  TORCH_CHECK(source_local.is_contiguous(), "source_local must be contiguous");
+  TORCH_CHECK(dest_symm.scalar_type() == source_symm.scalar_type(), "dest_symm and source_symm must have the same dtype");
+  TORCH_CHECK(dest_symm.scalar_type() == source_local.scalar_type(), "dest_symm and source_local must have the same dtype");
+  TORCH_CHECK(dest_local.scalar_type() == source_local.scalar_type(), "dest_local and source_local must have the same dtype");
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  cudaMemcpy(source_symm.data_ptr(), source_local.data_ptr(), nelems * source_local.element_size(),cudaMemcpyDefault);
+  cudaStreamSynchronize(stream);
+  barrier_all_on_current_stream();
+  sum_reduce(dest_symm, source_symm, nelems);
+  cudaMemcpy(dest_local.data_ptr(), dest_symm.data_ptr(), nelems * dest_local.element_size(),cudaMemcpyDefault);
+  nvshmem_quiet();
+}
+
+void fake_allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm, at::Tensor dest_local, at::Tensor source_local, int64_t nelems) {}
+
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("nvshmem_get_unique_id", &get_unique_id);
   m.def("nvshmem_unique_id_size", &unique_id_size);
@@ -237,12 +260,16 @@ TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("nvshmem_malloc", &malloc_tensor);
   m.def("nvshmem_barrier_all", &barrier_all);
   m.def("nvshmem_barrier_all_on_current_stream", &barrier_all_on_current_stream);
+  m.def("nvshmem_quiet", &quiet);
   m.def("nvshmem_alltoall(Tensor! dest, Tensor src) -> ()");
   m.impl("nvshmem_alltoall", c10::kCUDA, &alltoall);
   m.impl("nvshmem_alltoall", c10::kMeta, &fake_alltoall);
   m.def("nvshmem_sum_reduce(Tensor! dest, Tensor src, int nelems) -> ()");
   m.impl("nvshmem_sum_reduce", c10::kCUDA, &sum_reduce);
   m.impl("nvshmem_sum_reduce", c10::kMeta, &fake_sum_reduce);
+  m.def("nvshmem_allreduce_on_stream_with_copy(Tensor! dest_symm, Tensor source_symm, Tensor dest_local, Tensor source_local, int nelems) -> ()");
+  m.impl("nvshmem_allreduce_on_stream_with_copy", c10::kCUDA, &allreduce_on_stream_with_copy);
+  m.impl("nvshmem_allreduce_on_stream_with_copy", c10::kMeta, &fake_allreduce_on_stream_with_copy);
   m.def("nvshmem_multicast_ptr", &multicast_ptr);
 };
 

@@ -1098,3 +1098,88 @@ def trtllm_moe_allreduce_fusion(
         quant_out=quant_out,
         scale_out=scale_out,
     )
+
+
+class MNNVLAllReduce:
+    """
+    A specialized AllReduce implementation for Multi-Node NVLink communication.
+    This class handles MNNVL-specific allreduce operations, optimized for NVLink-enabled clusters.
+    """
+
+    def __init__(
+        self,
+        local_rank: int,
+        world_size: int,
+        max_buffer_elements: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        group: Optional[ProcessGroup] = None,
+    ):
+        self.local_rank = local_rank
+        self.world_size = world_size
+        self.dtype = dtype
+        self.device = device
+        self.max_buffer_elements = max_buffer_elements
+        self.group = group
+        self.nvshmem_module = get_nvshmem_module()
+        #self.stream = device.
+        # init nvshmem
+        torch.zeros(self.nvshmem_module.nvshmem_unique_id_size(), dtype=torch.uint8, device="cpu")
+        if self.local_rank == 0:
+            uid = self.nvshmem_module.nvshmem_get_unique_id()
+        else:
+            uid = torch.zeros(self.nvshmem_module.nvshmem_unique_id_size(), dtype=torch.uint8, device="cpu")
+        torch.distributed.broadcast(uid, src=0)
+        torch.distributed.barrier(self.group)
+        init_status = self.nvshmem_module.nvshmem_init(uid, self.local_rank, self.world_size)
+        torch.cuda.synchronize()
+        if init_status != 0:
+            raise RuntimeError("Failed to initialize nvshmem")
+
+        # assert PE and world size match
+        my_pe = self.nvshmem_module.nvshmem_my_pe()
+        n_pes = self.nvshmem_module.nvshmem_n_pes()
+        if my_pe != local_rank:
+            print(f"WARNING: Rank {local_rank}: PE mismatch! Expected PE {local_rank}, got PE {my_pe}", flush=True)
+        if n_pes != world_size:
+            print(f"WARNING: Rank {local_rank}: World size mismatch! Expected {world_size}, got {n_pes}", flush=True)
+
+        # allocate memory in nvshmem symm heap
+        self.symm_buffer_input = self.nvshmem_module.nvshmem_malloc(
+            [max_buffer_elements],
+            self.dtype,
+            self.device,
+        )
+        self.symm_buffer_output = self.nvshmem_module.nvshmem_malloc(
+            [max_buffer_elements],
+            self.dtype,
+            self.device,
+        )
+        torch.distributed.barrier(self.group)
+
+    def all_reduce(self, inp: torch.Tensor, out: torch.Tensor) -> None:
+        self.nvshmem_module.nvshmem_allreduce_on_stream_with_copy(
+            self.symm_buffer_output, 
+            self.symm_buffer_input, 
+            out, 
+            inp, 
+            inp.numel(),
+        )
+
+
+    def all_reduce_2(self, inp: torch.Tensor, out: torch.Tensor) -> None:
+        numel = inp.numel()
+        input_buffer = self.symm_buffer_input.narrow(0, 0, numel)
+        output_buffer = self.symm_buffer_output.narrow(0, 0, numel)
+        input_buffer.copy_(inp)
+        self.nvshmem_module.nvshmem_barrier_all_on_current_stream()
+        self.nvshmem_module.nvshmem_sum_reduce(self.symm_buffer_output, self.symm_buffer_input, numel)
+        self.nvshmem_module.nvshmem_quiet()
+        out.copy_(output_buffer)
+        
+    def shutdown(self):
+        del self.symm_buffer_input
+        del self.symm_buffer_output
+        torch.distributed.barrier(self.group)
+        torch.cuda.synchronize()
+        self.nvshmem_module.nvshmem_finalize()
