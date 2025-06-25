@@ -59,6 +59,7 @@ install_requires = [
     "cuda-python",
     "pynvml",
     "nvidia-nvshmem-cu12",
+    "nvidia-cutlass-dsl",
 ]
 generate_build_meta({})
 
