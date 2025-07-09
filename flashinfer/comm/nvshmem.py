@@ -55,6 +55,14 @@ def unique_id_size() -> int:
     return get_nvshmem_module().nvshmem_unique_id_size()
 
 
+def get_team_unique_id() -> torch.Tensor:
+    return get_nvshmem_module().nvshmem_get_team_unique_id()
+
+
+def team_unique_id_size() -> int:
+    return get_nvshmem_module().nvshmem_team_unique_id_size()
+
+
 def alloc_empty_unique_id() -> torch.Tensor:
     return torch.zeros(unique_id_size(), dtype=torch.uint8, device="cpu")
 

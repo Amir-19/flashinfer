@@ -25,6 +25,50 @@
 
 namespace {
 
+static std::unordered_map<std::string, nvshmem_team_t> group_name_to_team_;
+
+nvshmem_team_t group_to_team(
+    const std::string& group_name,
+    const std::vector<int>& global_ranks) {
+  auto it = group_name_to_team_.find(group_name);
+  if (it != group_name_to_team_.end()) {
+    return it->second;
+  }
+}
+
+int create_team(const std::string& group_name, const std::vector<int>& global_ranks) {
+  nvshmem_team_config_t *config;
+  config = (nvshmem_team_config_t *)malloc(sizeof(nvshmem_team_config_t));
+  *config = NVSHMEM_TEAM_CONFIG_INITIALIZER;
+
+  int status = 0;
+  int my_pe = nvshmem_my_pe();
+  int npes = nvshmem_n_pes();
+  int team_size = 0;
+  int my_idx_in_team;
+
+  nvshmem_team_t team;
+  NVSHMEM_CHECK(
+      nvshmemx_team_init(
+          team,
+          config, 
+          NVSHMEM_TEAM_CONFIG_MASK_UNIQUEID,
+          team_size,
+          my_idx_in_team),
+          "nvshmemx_team_init failed");
+  group_name_to_team_[group_name] = team;
+  TORCH_CHECK(team != NVSHMEM_TEAM_INVALID);
+}
+
+at::Tensor get_team_unique_id() {
+  nvshmemx_team_uniqueid_t uid; // should this be *
+  nvshmemx_team_get_uniqueid(&uid); // should this be non and
+  return at::from_blob(&uid, sizeof(uid), at::kByte).clone();
+}
+
+int64_t team_unique_id_size() { return sizeof(nvshmemx_team_uniqueid_t); }
+
+
 at::Tensor get_unique_id() {
   nvshmemx_uniqueid_t uid = NVSHMEMX_UNIQUEID_INITIALIZER;
   nvshmemx_get_uniqueid(&uid);
@@ -64,6 +108,15 @@ at::Tensor malloc_tensor(const std::vector<int64_t>& shape, c10::ScalarType dtyp
       at::TensorOptions().dtype(dtype).device(device));
 }
 
+int64_t multicast_ptr(at::Tensor tensor, const std::string& group_name) {
+  auto team = group_to_team(group_name);
+  void *mc_ptr = nvshmemx_mc_ptr(team, (void *) tensor.data_ptr());
+  if (mc_ptr == nullptr) {
+    AT_ERROR("nvshmemx_mc_ptr failed.");
+  }
+  return reinterpret_cast<int64_t>(mc_ptr);
+}
+
 void barrier_all() { nvshmem_barrier_all(); }
 
 void barrier_all_on_current_stream() {
@@ -71,19 +124,20 @@ void barrier_all_on_current_stream() {
   nvshmemx_barrier_all_on_stream(stream);
 }
 
-void alltoall(at::Tensor dest, at::Tensor source) {
+void alltoall(at::Tensor dest, at::Tensor source, const std::string& group_name) {
   TORCH_CHECK(dest.is_contiguous(), "dest must be contiguous");
   TORCH_CHECK(source.is_contiguous(), "source must be contiguous");
 
   size_t nbytes = dest.numel() * dest.itemsize() / dest.size(0);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  NVSHMEMCHECK(nvshmemx_alltoallmem_on_stream(NVSHMEM_TEAM_WORLD, (uint8_t*)dest.data_ptr(),
+  auto team = group_to_team(group_name);
+  NVSHMEMCHECK(nvshmemx_alltoallmem_on_stream(team, (uint8_t*)dest.data_ptr(),
                                               (uint8_t*)source.data_ptr(), nbytes, stream));
 }
 
-void fake_alltoall(at::Tensor dest, at::Tensor source) {}
+void fake_alltoall(at::Tensor dest, at::Tensor source, const std::string& group_name) {}
 
-void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
+void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems, const std::string& group_name) {
   TORCH_CHECK(dest.is_contiguous(), "dest must be contiguous");
   TORCH_CHECK(source.is_contiguous(), "source must be contiguous");
   TORCH_CHECK(dest.scalar_type() == source.scalar_type(),
@@ -95,21 +149,21 @@ void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
   size_t nelems_size_t = static_cast<size_t>(nelems);
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
+  auto team = group_to_team(group_name);
   switch (dest.scalar_type()) {
     case at::kHalf:  // float16
-      NVSHMEMCHECK(nvshmemx_half_sum_reduce_on_stream(NVSHMEM_TEAM_WORLD, (__half*)dest.data_ptr(),
+      NVSHMEMCHECK(nvshmemx_half_sum_reduce_on_stream(team, (__half*)dest.data_ptr(),
                                                       (__half*)source.data_ptr(), nelems_size_t,
                                                       stream));
       break;
     case at::kFloat:  // float32
-      NVSHMEMCHECK(nvshmemx_float_sum_reduce_on_stream(NVSHMEM_TEAM_WORLD, (float*)dest.data_ptr(),
+      NVSHMEMCHECK(nvshmemx_float_sum_reduce_on_stream(team, (float*)dest.data_ptr(),
                                                        (float*)source.data_ptr(), nelems_size_t,
                                                        stream));
       break;
     case at::kBFloat16:  // bfloat16
       NVSHMEMCHECK(nvshmemx_bfloat16_sum_reduce_on_stream(
-          NVSHMEM_TEAM_WORLD, (__nv_bfloat16*)dest.data_ptr(), (__nv_bfloat16*)source.data_ptr(),
+          team, (__nv_bfloat16*)dest.data_ptr(), (__nv_bfloat16*)source.data_ptr(),
           nelems_size_t, stream));
       break;
 
@@ -118,10 +172,10 @@ void sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {
   }
 }
 
-void fake_sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems) {}
+void fake_sum_reduce(at::Tensor dest, at::Tensor source, int64_t nelems, const std::string& group_name) {}
 
 void allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm,
-                                   at::Tensor dest_local, at::Tensor source_local, int64_t nelems) {
+                                   at::Tensor dest_local, at::Tensor source_local, int64_t nelems, const std::string& group_name) {
   TORCH_CHECK(dest_symm.is_contiguous(), "dest_symm must be contiguous");
   TORCH_CHECK(source_symm.is_contiguous(), "source_symm must be contiguous");
   TORCH_CHECK(dest_local.is_contiguous(), "dest_local must be contiguous");
@@ -134,11 +188,11 @@ void allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_symm,
               "dest_local and source_local must have the same dtype");
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
+  auto team = group_to_team(group_name);
   cudaMemcpyAsync(source_symm.data_ptr(), source_local.data_ptr(),
                   nelems * source_local.element_size(), cudaMemcpyDefault, stream);
-  nvshmemx_barrier_on_stream(NVSHMEM_TEAM_WORLD, stream);
-  sum_reduce(dest_symm, source_symm, nelems);
+  nvshmemx_barrier_on_stream(team, stream);
+  sum_reduce(dest_symm, source_symm, nelems, group_name);
   cudaMemcpyAsync(dest_local.data_ptr(), dest_symm.data_ptr(), nelems * dest_local.element_size(),
                   cudaMemcpyDefault, stream);
   cudaStreamSynchronize(stream);
@@ -151,22 +205,25 @@ void fake_allreduce_on_stream_with_copy(at::Tensor dest_symm, at::Tensor source_
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   m.def("nvshmem_get_unique_id", &get_unique_id);
   m.def("nvshmem_unique_id_size", &unique_id_size);
+  m.def("nvshmem_team_unique_id_size", &team_unique_id_size);
+  m.def("nvshmem_get_team_unique_id", &get_team_unique_id);
   m.def("nvshmem_init", &init);
   m.def("nvshmem_finalize", &finalize);
   m.def("nvshmem_my_pe", &my_pe);
   m.def("nvshmem_n_pes", &n_pes);
   m.def("nvshmem_malloc", &malloc_tensor);
+  m.def("nvshmem_multicast_ptr", &multicast_ptr);
   m.def("nvshmem_barrier_all", &barrier_all);
   m.def("nvshmem_barrier_all_on_current_stream", &barrier_all_on_current_stream);
-  m.def("nvshmem_alltoall(Tensor! dest, Tensor src) -> ()");
+  m.def("nvshmem_alltoall(Tensor! dest, Tensor src, str group_name) -> ()");
   m.impl("nvshmem_alltoall", c10::kCUDA, &alltoall);
   m.impl("nvshmem_alltoall", c10::kMeta, &fake_alltoall);
-  m.def("nvshmem_sum_reduce(Tensor! dest, Tensor src, int nelems) -> ()");
+  m.def("nvshmem_sum_reduce(Tensor! dest, Tensor src, int nelems, str group_name) -> ()");
   m.impl("nvshmem_sum_reduce", c10::kCUDA, &sum_reduce);
   m.impl("nvshmem_sum_reduce", c10::kMeta, &fake_sum_reduce);
   m.def(
       "nvshmem_allreduce_on_stream_with_copy(Tensor! dest_symm, Tensor source_symm, Tensor "
-      "dest_local, Tensor source_local, int nelems) -> ()");
+      "dest_local, Tensor source_local, int nelems, str group_name) -> ()");
   m.impl("nvshmem_allreduce_on_stream_with_copy", c10::kCUDA, &allreduce_on_stream_with_copy);
   m.impl("nvshmem_allreduce_on_stream_with_copy", c10::kMeta, &fake_allreduce_on_stream_with_copy);
 };

@@ -94,11 +94,6 @@ class NVSHMEMAllReduce:
         torch.distributed.barrier(self.group)
 
     def init_nvshmem(self):
-        torch.zeros(
-            self.nvshmem_module.nvshmem_unique_id_size(),
-            dtype=torch.uint8,
-            device="cpu",
-        )
         if self.local_rank == 0:
             uid = self.nvshmem_module.nvshmem_get_unique_id()
         else:
