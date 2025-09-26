@@ -3041,6 +3041,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 masked_m_tensor_gpu,
                 dst_signals_tensor_gpu,
                 alpha_tensor_gpu,
+                c_mc_ptr,
+                barrier_flag_ptr,
+                barrier_flag_mc_ptr,
             ) = input_tensors
 
             assert enable_dst_signals == (dst_signals_tensor_gpu is not None)
@@ -3065,6 +3068,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 if dst_signals_tensor_gpu is not None
                 else None,
                 alpha_tensor_gpu.data_ptr() if alpha_tensor_gpu is not None else None,
+                c_mc_ptr.data_ptr() if c_mc_ptr is not None else None,
+                barrier_flag_ptr.data_ptr() if barrier_flag_ptr is not None else None,
+                barrier_flag_mc_ptr.data_ptr() if barrier_flag_mc_ptr is not None else None,
             )
 
         a_ptr = make_ptr(
@@ -3123,6 +3129,36 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
             if alpha_data_ptr is not None and alpha_dtype is not None
             else None
         )
+        c_mc_ptr = (
+            make_ptr(
+                c_dtype,
+                c_mc_ptr,
+                cute.AddressSpace.gmem,
+                assumed_align=16,
+            )
+            if c_mc_ptr is not None
+            else None
+        )
+        barrier_flag_ptr = (
+            make_ptr(
+                cutlass.Int32,
+                barrier_flag_ptr,
+                cute.AddressSpace.gmem,
+                assumed_align=16,
+            )
+            if barrier_flag_ptr is not None
+            else None
+        )
+        barrier_flag_mc_ptr = (
+            make_ptr(
+                cutlass.Int32,
+                barrier_flag_mc_ptr,
+                cute.AddressSpace.gmem,
+                assumed_align=16,
+            )
+            if barrier_flag_mc_ptr is not None
+            else None
+        )
 
         return [
             a_ptr,
@@ -3133,6 +3169,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
             masked_m_ptr,
             dst_signals_ptr,
             alpha_ptr,
+            c_mc_ptr,
+            barrier_flag_ptr,
+            barrier_flag_mc_ptr,
         ]
 
     kernel = cute.compile(
@@ -3195,6 +3234,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                     masked_m_tensor_gpu,
                     dst_signals_tensor_gpu,
                     alpha_tensor_gpu,
+                    c_mc_ptr,
+                    barrier_flag_ptr,
+                    barrier_flag_mc_ptr,
                 ]
             ),
             current_stream,
