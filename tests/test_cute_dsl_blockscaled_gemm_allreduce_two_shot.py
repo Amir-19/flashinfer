@@ -249,6 +249,7 @@ def test_blockscaled_gemm_all_reduce_python_interface(
     res_b = torch.einsum("nkl,nkl->nkl", b_ref, sfb_ref)
     ref = torch.einsum("mkl,nkl->mnl", res_a, res_b)
     ref = torch.einsum("mnl,l->mnl", ref, alpha_tensor)
+    ref = ref.contiguous()
     torch.distributed.all_reduce(ref, op=torch.distributed.ReduceOp.SUM, group=dist.group.WORLD)
     # Convert c back to f32 for comparison.
     cute.testing.convert(
