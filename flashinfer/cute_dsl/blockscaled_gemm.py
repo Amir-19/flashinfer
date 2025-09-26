@@ -3165,6 +3165,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
         dst_signals_tensor_gpu: torch.Tensor,
         c_tensor_gpu: Optional[torch.Tensor] = None,
         alpha_tensor_gpu: Optional[torch.Tensor] = None,
+        c_mc_ptr: Optional[torch.Tensor] = None,
+        barrier_flag_ptr: Optional[torch.Tensor] = None,
+        barrier_flag_mc_ptr: Optional[torch.Tensor] = None,
     ):
         if c_tensor_gpu is None:
             # fp4 gemm output is not supported
@@ -3212,7 +3215,7 @@ def grouped_gemm_nt_masked(
     dst_signals: Optional[torch.Tensor] = None,
     sm_count: Optional[int] = None,
     all_reduce: str = "none",
-    c_mc: Optional[torch.Tensor] = None,
+    out_mc: Optional[torch.Tensor] = None,
     barrier_flag: Optional[torch.Tensor] = None,
     barrier_flag_mc: Optional[torch.Tensor] = None,
     **kwargs,
@@ -3305,7 +3308,7 @@ def grouped_gemm_nt_masked(
         masked_m_tensor_gpu=masked_m,
         dst_signals_tensor_gpu=dst_signals,
         alpha_tensor_gpu=alpha,
-        c_mc_ptr=c_mc,
+        c_mc_ptr=out_mc,
         barrier_flag_ptr=barrier_flag,
         barrier_flag_mc_ptr=barrier_flag_mc,
     )
