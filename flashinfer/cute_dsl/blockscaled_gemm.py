@@ -3029,7 +3029,7 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 c_mc_data_ptr,
                 barrier_flag_data_ptr,
                 barrier_flag_mc_data_ptr,
-            ) = [19 for _ in range(8)]
+            ) = [16 for _ in range(11)]
 
             if not enable_dst_signals:
                 dst_signals_data_ptr = None
