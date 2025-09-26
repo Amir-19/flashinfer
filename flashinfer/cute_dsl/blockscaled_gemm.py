@@ -3030,6 +3030,10 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
 
             if not enable_dst_signals:
                 dst_signals_data_ptr = None
+            if all_reduce == "none":
+                c_mc_data_ptr = None
+                barrier_flag_data_ptr = None
+                barrier_flag_mc_data_ptr = None
 
         else:
             (
@@ -3210,9 +3214,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
         dst_signals_tensor_gpu: torch.Tensor,
         c_tensor_gpu: Optional[torch.Tensor] = None,
         alpha_tensor_gpu: Optional[torch.Tensor] = None,
-        c_mc_ptr: Optional[torch.Tensor] = None,
-        barrier_flag_ptr: Optional[torch.Tensor] = None,
-        barrier_flag_mc_ptr: Optional[torch.Tensor] = None,
+        c_mc_gpu: Optional[torch.Tensor] = None,
+        barrier_flag_gpu: Optional[torch.Tensor] = None,
+        barrier_flag_mc_gpu: Optional[torch.Tensor] = None,
     ):
         if c_tensor_gpu is None:
             # fp4 gemm output is not supported
@@ -3237,9 +3241,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                     masked_m_tensor_gpu,
                     dst_signals_tensor_gpu,
                     alpha_tensor_gpu,
-                    c_mc_ptr,
-                    barrier_flag_ptr,
-                    barrier_flag_mc_ptr,
+                    c_mc_gpu,
+                    barrier_flag_gpu,
+                    barrier_flag_mc_gpu,
                 ]
             ),
             current_stream,
