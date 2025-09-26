@@ -166,18 +166,18 @@ def test_blockscaled_gemm_all_reduce_python_interface(
         is_dynamic_layout=True,
         assumed_align=16,
     )
-    c_tensor, c_torch = cutlass_torch.cute_tensor_like(
-        c_ref,
-        get_cutlass_dtype(c_dtype),
-        is_dynamic_layout=True,
-        assumed_align=16,
-    )
-    # c_tensor, c_tensor_mc, c_torch = create_mc_tensor(
+    # c_tensor, c_torch = cutlass_torch.cute_tensor_like(
     #     c_ref,
     #     get_cutlass_dtype(c_dtype),
-    #     (1 if c_major == "n" else 0),
     #     is_dynamic_layout=True,
+    #     assumed_align=16,
     # )
+    c_tensor, c_tensor_mc, c_torch = create_mc_tensor(
+        c_ref,
+        get_cutlass_dtype(c_dtype),
+        (1 if c_major == "n" else 0),
+        is_dynamic_layout=True,
+    )
     alpha_tensor = (
         torch.randn(l, dtype=torch.float32, device=device) if fuse_alpha else None
     )
@@ -237,6 +237,10 @@ def test_blockscaled_gemm_all_reduce_python_interface(
             alpha_dtype=alpha_dtype,
             sm_count=sm_count,
             dst_signals=dst_signals,
+            all_reduce=all_reduce,
+            out_mc=c_tensor_mc,
+            barrier_flag=barrier_flag_memref,
+            barrier_flag_mc=barrier_flag_mc_memref,
         )
 
         if enable_dst_signals:
@@ -309,7 +313,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
 
     try:
         test_blockscaled_gemm_all_reduce_python_interface(
-            lm=(4, 256),
+            lm=(1, 1024), # 2, 256
             kn=(7168, 4096),
             ab_dtype="float8_e5m2",
             sf_dtype="float8_e8m0fnu",
