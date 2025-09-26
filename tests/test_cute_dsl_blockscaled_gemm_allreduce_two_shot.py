@@ -84,7 +84,7 @@ def create_barrier_flags(m, n, mma_tiler_mn):
 
         return barrier_flag_memref, barrier_flag_mc_memref
 
-def test_blockscaled_gemm_python_interface(
+def test_blockscaled_gemm_all_reduce_python_interface(
     lm: Tuple[int, int],
     kn: Tuple[int, int],
     ab_dtype: cutlass.dtype,
@@ -103,9 +103,10 @@ def test_blockscaled_gemm_python_interface(
     iterations: int,
     enable_dst_signals: int,
     all_reduce: str,
+    rank:int,
 ):
     torch.manual_seed(42)
-    device = torch.device("cuda:0")
+    device = torch.device("cuda", rank)
     major, minor = torch.cuda.get_device_capability(device)
 
     if not (major == 10 and minor == 0):
@@ -306,7 +307,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
     rank_id = torch.distributed.get_rank()
 
     try:
-        test_blockscaled_gemm_python_interface(
+        test_blockscaled_gemm_all_reduce_python_interface(
             lm=(4, 256),
             kn=(7168, 4096),
             ab_dtype="float8_e5m2",
@@ -325,6 +326,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
             sm_count=132,
             enable_dst_signals=True,
             all_reduce="two_shot",
+            rank=rank
         )
     except Exception as e:
         print(f"Rank {rank_id}: Exception during test: {e}")
