@@ -323,7 +323,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
             cluster_shape_mn=(2, 1),
             tolerance=1e-01,
             iterations=3,
-            sm_count=132,
+            sm_count=148,
             enable_dst_signals=True,
             all_reduce="two_shot",
             rank=rank,
