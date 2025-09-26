@@ -2841,6 +2841,7 @@ class MaskedBatchedMatmulCuteDSL:
         self._sf_vec_size = sf_vec_size
         self._mma_tiler_mn = mma_tiler_mn
         self._cluster_shape_mn = cluster_shape_mn
+        self._all_reduce = all_reduce
 
         if not Sm100BlockScaledPersistentDenseGemmKernel.can_implement(
             ab_dtype,
@@ -3010,6 +3011,7 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
     sm_count: int,
     sm_version: str,
     enable_dst_signals: bool,
+    all_reduce: str = "none",
 ) -> Callable:
     def get_cute_pointers(
         input_tensors: Optional[List[torch.tensor]],
@@ -3151,6 +3153,7 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
             cluster_shape_mn=cluster_shape_mn,
             sm_count=sm_count,
             sm_version=sm_version,
+            all_reduce=all_reduce,
         ),
         *get_cute_pointers(None),
         cutlass_torch.current_stream(),

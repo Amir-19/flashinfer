@@ -326,7 +326,7 @@ def _run_correctness_worker(world_size, rank, distributed_init_port):
             sm_count=132,
             enable_dst_signals=True,
             all_reduce="two_shot",
-            rank=rank
+            rank=rank,
         )
     except Exception as e:
         print(f"Rank {rank_id}: Exception during test: {e}")
