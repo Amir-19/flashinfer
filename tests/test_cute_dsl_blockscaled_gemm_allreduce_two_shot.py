@@ -55,7 +55,7 @@ def create_mc_tensor(torch_tensor_cpu, dtype, leading_dim, is_dynamic_layout=Tru
     return cute_tensor, cute_tensor_mc, torch_tensor_gpu
 
 def create_barrier_flags(m, n, mma_tiler_mn):
-        # NOTE: this is taken from blockedscaled_gemm logic
+        # NOTE: use_2cta_instrs from blockedscaled_gemm logic
         use_2cta_instrs = mma_tiler_mn[0] == 256
         cta_tile_shape_mn = (
             mma_tiler_mn[0] // (2 if use_2cta_instrs else 1),
@@ -171,12 +171,12 @@ def test_blockscaled_gemm_python_interface(
         is_dynamic_layout=True,
         assumed_align=16,
     )
-    c_tensor, c_tensor_mc, c_torch = create_mc_tensor(
-        c_ref,
-        get_cutlass_dtype(c_dtype),
-        (1 if c_major == "n" else 0),
-        is_dynamic_layout=True,
-    )
+    # c_tensor, c_tensor_mc, c_torch = create_mc_tensor(
+    #     c_ref,
+    #     get_cutlass_dtype(c_dtype),
+    #     (1 if c_major == "n" else 0),
+    #     is_dynamic_layout=True,
+    # )
     alpha_tensor = (
         torch.randn(l, dtype=torch.float32, device=device) if fuse_alpha else None
     )
@@ -248,7 +248,7 @@ def test_blockscaled_gemm_python_interface(
     res_b = torch.einsum("nkl,nkl->nkl", b_ref, sfb_ref)
     ref = torch.einsum("mkl,nkl->mnl", res_a, res_b)
     ref = torch.einsum("mnl,l->mnl", ref, alpha_tensor)
-
+    torch.distributed.all_reduce(ref, op=torch.distributed.ReduceOp.SUM, group=dist.group.WORLD)
     # Convert c back to f32 for comparison.
     cute.testing.convert(
         c_tensor,
