@@ -1082,7 +1082,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             cpasync.prefetch_descriptor(tma_atom_c)
 
         use_2cta_instrs = cute.size(tiled_mma.thr_id.shape) == 2
-        cute.printf("use_2cta_instrs in kernel: %s", use_2cta_instrs)
+        cute.printf("use_2cta_instrs in kernel: %b", use_2cta_instrs)
         #
         # Setup cta/thread coordinates
         #
