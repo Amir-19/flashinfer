@@ -69,6 +69,7 @@ def create_barrier_flags(m, n, mma_tiler_mn):
         barrier_flag = symm_mem.empty(
             (num_tiles + num_sms,), device="cuda", dtype=torch.int32
         )
+        print("LOOK HERE",(num_tiles + num_sms,))
         barrier_flag.fill_(0)
         symm = symm_mem.rendezvous(barrier_flag, group=dist.group.WORLD.group_name)
         barrier_flag_mc_ptr = symm.multicast_ptr

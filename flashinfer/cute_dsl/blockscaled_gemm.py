@@ -2910,6 +2910,21 @@ class MaskedBatchedMatmulCuteDSL:
                 order=(0, 1, 2) if self._c_major == "m" else (1, 0, 2),
             ),
         )
+        c_mc_tensor = cute.make_tensor(
+            c_mc_ptr,
+            layout=cute.make_ordered_layout(
+                (self._m, self._n, self._l),
+                order=(0, 1, 2) if self._c_major == "m" else (1, 0, 2),
+            ),
+        ) if c_mc_ptr is not None else None
+        barrier_flag_tensor = cute.make_tensor(
+            barrier_flag_ptr,
+            layout=cute.make_ordered_layout((self._l,), order=(0,)),
+        ) if barrier_flag_ptr is not None else None
+        barrier_flag_mc_tensor = cute.make_tensor(
+            barrier_flag_mc_ptr,
+            layout=cute.make_ordered_layout((self._l,), order=(0,)),
+        ) if barrier_flag_mc_ptr is not None else None
 
         # calculate sf_tensor shape and order
         def ceil_div(a, b):
@@ -2986,9 +3001,9 @@ class MaskedBatchedMatmulCuteDSL:
             alpha_tensor,
             self._max_active_clusters,
             current_stream,
-            c_mc_ptr,
-            barrier_flag_ptr,
-            barrier_flag_mc_ptr,
+            c_mc_tensor,
+            barrier_flag_tensor,
+            barrier_flag_mc_tensor,
         )
 
 
@@ -3363,7 +3378,7 @@ def grouped_gemm_nt_masked(
         masked_m_tensor_gpu=masked_m,
         dst_signals_tensor_gpu=dst_signals,
         alpha_tensor_gpu=alpha,
-        c_mc_ptr=out_mc,
-        barrier_flag_ptr=barrier_flag,
-        barrier_flag_mc_ptr=barrier_flag_mc,
+        c_mc_gpu=out_mc,
+        barrier_flag_gpu=barrier_flag,
+        barrier_flag_mc_gpu=barrier_flag_mc,
     )
