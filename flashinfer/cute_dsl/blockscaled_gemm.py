@@ -2884,10 +2884,10 @@ class MaskedBatchedMatmulCuteDSL:
         masked_m_ptr: cute.Pointer,
         dst_signals_ptr: Optional[cute.Pointer],
         alpha_ptr: cute.Pointer,
+        c_mc_ptr: Optional[cute.Pointer],
+        barrier_flag_ptr: Optional[cute.Pointer],
+        barrier_flag_mc_ptr: Optional[cute.Pointer],
         current_stream: cuda.CUstream,
-        c_mc_ptr: cute.Pointer = None,
-        barrier_flag_ptr: cute.Pointer = None,
-        barrier_flag_mc_ptr: cute.Pointer = None,
     ):
         a_tensor = cute.make_tensor(
             a_ptr,
