@@ -2917,13 +2917,14 @@ class MaskedBatchedMatmulCuteDSL:
                 order=(0, 1, 2) if self._c_major == "m" else (1, 0, 2),
             ),
         ) if c_mc_ptr is not None else None
+        #TODO(asamani): urgent fix this is just for dev
         barrier_flag_tensor = cute.make_tensor(
             barrier_flag_ptr,
-            layout=cute.make_ordered_layout((self._l,), order=(0,)),
+            layout=cute.make_ordered_layout((404,), order=(0,)),
         ) if barrier_flag_ptr is not None else None
         barrier_flag_mc_tensor = cute.make_tensor(
             barrier_flag_mc_ptr,
-            layout=cute.make_ordered_layout((self._l,), order=(0,)),
+            layout=cute.make_ordered_layout((404,), order=(0,)),
         ) if barrier_flag_mc_ptr is not None else None
 
         # calculate sf_tensor shape and order
