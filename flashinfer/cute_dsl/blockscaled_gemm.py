@@ -3080,9 +3080,10 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 masked_m_data_ptr,
                 dst_signals_data_ptr,
                 alpha_data_ptr,
-                c_mc_data_ptr,
+                
                 barrier_flag_data_ptr,
                 barrier_flag_mc_data_ptr,
+                c_mc_data_ptr,
             ) = (
                 a_tensor_gpu.data_ptr(),
                 b_tensor_gpu.data_ptr(),
@@ -3094,9 +3095,10 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 if dst_signals_tensor_gpu is not None
                 else None,
                 alpha_tensor_gpu.data_ptr() if alpha_tensor_gpu is not None else None,
-                c_mc_gpu.data_ptr() if c_mc_gpu is not None else None,
+                
                 barrier_flag_gpu.data_ptr() if barrier_flag_gpu is not None else None,
                 barrier_flag_mc_gpu.data_ptr() if barrier_flag_mc_gpu is not None else None,
+                c_mc_gpu.data_ptr() if c_mc_gpu is not None else None,
             )
 
         a_ptr = make_ptr(
