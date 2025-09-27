@@ -569,6 +569,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         self.acc_dtype = cutlass.Float32
         self.sf_vec_size = sf_vec_size
         self.use_2cta_instrs = mma_tiler_mn[0] == 256
+        print("use_2cta_instrs in init: %s", self.use_2cta_instrs)
         self.cluster_shape_mn = cluster_shape_mn
         # K dimension is deferred in _setup_attributes
         self.mma_tiler = (*mma_tiler_mn, 1)
@@ -1081,7 +1082,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             cpasync.prefetch_descriptor(tma_atom_c)
 
         use_2cta_instrs = cute.size(tiled_mma.thr_id.shape) == 2
-
+        cute.printf("use_2cta_instrs in kernel: %s", use_2cta_instrs)
         #
         # Setup cta/thread coordinates
         #
