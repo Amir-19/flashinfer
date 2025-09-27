@@ -71,18 +71,18 @@ def create_barrier_flags(m, n, mma_tiler_mn):
         )
         barrier_flag.fill_(0)
         symm = symm_mem.rendezvous(barrier_flag, group=dist.group.WORLD.group_name)
-        barrier_flag_mc = symm.multicast_ptr
+        barrier_flag_mc_ptr = symm.multicast_ptr
 
         barrier_flag_memref = from_dlpack(barrier_flag)
         barrier_flag_memref = barrier_flag_memref.mark_layout_dynamic()
         barrier_flag_mc_memref = from_dlpack(
             cutlass_torch.as_tensor(
-                barrier_flag_mc, barrier_flag.shape, barrier_flag.dtype
+                barrier_flag_mc_ptr, barrier_flag.shape, barrier_flag.dtype
             ),
         )
         barrier_flag_mc_memref = barrier_flag_mc_memref.mark_layout_dynamic()
 
-        return barrier_flag_memref, barrier_flag_mc_memref
+        return barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_mc_ptr
 
 def test_blockscaled_gemm_all_reduce_python_interface(
     lm: Tuple[int, int],
