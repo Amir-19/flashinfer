@@ -181,7 +181,7 @@ def test_blockscaled_gemm_all_reduce_python_interface(
     alpha_tensor = (
         torch.randn(l, dtype=torch.float32, device=device) if fuse_alpha else None
     )
-    barrier_flag_memref, barrier_flag_mc_memref = create_barrier_flags(
+    barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_mc_ptr = create_barrier_flags(
         l*m,
         n,
         mma_tiler_mn,
