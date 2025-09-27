@@ -62,6 +62,7 @@ from cutlass.cute.typing import (
     Float32,
     Float8E4M3FN,
     Float8E5M2,
+    Tensor,
 )
 from cutlass._mlir.dialects import llvm
 from flashinfer.utils import get_compute_capability
@@ -3080,10 +3081,10 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 masked_m_data_ptr,
                 dst_signals_data_ptr,
                 alpha_data_ptr,
-                
+                c_mc_data_ptr,
                 barrier_flag_data_ptr,
                 barrier_flag_mc_data_ptr,
-                c_mc_data_ptr,
+
             ) = (
                 a_tensor_gpu.data_ptr(),
                 b_tensor_gpu.data_ptr(),
@@ -3095,10 +3096,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                 if dst_signals_tensor_gpu is not None
                 else None,
                 alpha_tensor_gpu.data_ptr() if alpha_tensor_gpu is not None else None,
-                
+                c_mc_gpu.data_ptr() if c_mc_gpu is not None else None,
                 barrier_flag_gpu.data_ptr() if barrier_flag_gpu is not None else None,
                 barrier_flag_mc_gpu.data_ptr() if barrier_flag_mc_gpu is not None else None,
-                c_mc_gpu.data_ptr() if c_mc_gpu is not None else None,
             )
 
         a_ptr = make_ptr(
@@ -3235,9 +3235,12 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
         dst_signals_tensor_gpu: torch.Tensor,
         c_tensor_gpu: Optional[torch.Tensor] = None,
         alpha_tensor_gpu: Optional[torch.Tensor] = None,
-        c_mc_gpu: Optional[torch.Tensor] = None,
-        barrier_flag_gpu: Optional[torch.Tensor] = None,
-        barrier_flag_mc_gpu: Optional[torch.Tensor] = None,
+        c_mc_gpu: Optional[Tensor] = None,
+        c_mc_torch: Optional[torch.Tensor] = None,
+        barrier_flag_gpu: Optional[Tensor] = None,
+        barrier_flag_torch: Optional[torch.Tensor] = None,
+        barrier_flag_mc_gpu: Optional[Tensor] = None,
+        barrier_flag_mc_torch: Optional[torch.Tensor] = None,
     ):
         if c_tensor_gpu is None:
             # fp4 gemm output is not supported
@@ -3262,9 +3265,9 @@ def get_cute_dsl_compiled_masked_gemm_kernel(
                     masked_m_tensor_gpu,
                     dst_signals_tensor_gpu,
                     alpha_tensor_gpu,
-                    c_mc_gpu,
-                    barrier_flag_gpu,
-                    barrier_flag_mc_gpu,
+                    c_mc_torch,
+                    barrier_flag_torch,
+                    barrier_flag_mc_torch,
                 ]
             ),
             current_stream,
@@ -3288,9 +3291,12 @@ def grouped_gemm_nt_masked(
     dst_signals: Optional[torch.Tensor] = None,
     sm_count: Optional[int] = None,
     all_reduce: str = "none",
-    out_mc: Optional[torch.Tensor] = None,
-    barrier_flag: Optional[torch.Tensor] = None,
-    barrier_flag_mc: Optional[torch.Tensor] = None,
+    out_mc: Optional[Tensor] = None,
+    out_mc_torch: Optional[torch.Tensor] = None,
+    barrier_flag: Optional[Tensor] = None,
+    barrier_flag_mc: Optional[Tensor] = None,
+    barrier_flag_torch: Optional[torch.Tensor] = None,
+    barrier_flag_mc_torch: Optional[torch.Tensor] = None,
     **kwargs,
 ):
     """
@@ -3382,6 +3388,9 @@ def grouped_gemm_nt_masked(
         dst_signals_tensor_gpu=dst_signals,
         alpha_tensor_gpu=alpha,
         c_mc_gpu=out_mc,
+        c_mc_torch=out_mc_torch,
         barrier_flag_gpu=barrier_flag,
+        barrier_flag_torch=barrier_flag_torch,
         barrier_flag_mc_gpu=barrier_flag_mc,
+        barrier_flag_mc_torch=barrier_flag_mc_torch,
     )

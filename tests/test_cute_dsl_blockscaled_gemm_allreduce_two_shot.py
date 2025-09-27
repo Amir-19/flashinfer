@@ -35,8 +35,9 @@ def create_mc_tensor(torch_tensor_cpu, dtype, leading_dim, is_dynamic_layout=Tru
     symm = symm_mem.rendezvous(torch_symm_tensor, group=dist.group.WORLD.group_name)
     mc_ptr = symm.multicast_ptr
     # create MC tensor memref
+    torch_tensor_mc = cutlass_torch.as_tensor(mc_ptr, torch_tensor_cpu.shape, torch_tensor_cpu.dtype)
     cute_tensor_mc = from_dlpack(
-        cutlass_torch.as_tensor(mc_ptr, torch_tensor_cpu.shape, torch_tensor_cpu.dtype),
+        torch_tensor_mc,
         assumed_align=16,
     )
     if is_dynamic_layout:
@@ -52,7 +53,7 @@ def create_mc_tensor(torch_tensor_cpu, dtype, leading_dim, is_dynamic_layout=Tru
         dtype,
         is_dynamic_layout=is_dynamic_layout,
     )
-    return cute_tensor, cute_tensor_mc, torch_tensor_gpu
+    return cute_tensor, cute_tensor_mc, torch_tensor_gpu, torch_tensor_mc
 
 def create_barrier_flags(m, n, mma_tiler_mn):
         # NOTE: use_2cta_instrs from blockedscaled_gemm logic
@@ -76,14 +77,15 @@ def create_barrier_flags(m, n, mma_tiler_mn):
 
         barrier_flag_memref = from_dlpack(barrier_flag)
         barrier_flag_memref = barrier_flag_memref.mark_layout_dynamic()
-        barrier_flag_mc_memref = from_dlpack(
-            cutlass_torch.as_tensor(
+        barrier_flag_mc_torch = cutlass_torch.as_tensor(
                 barrier_flag_mc_ptr, barrier_flag.shape, barrier_flag.dtype
-            ),
+        )
+        barrier_flag_mc_memref = from_dlpack(
+            barrier_flag_mc_torch,
         )
         barrier_flag_mc_memref = barrier_flag_mc_memref.mark_layout_dynamic()
-
-        return barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_mc_ptr
+        barrier_flag_torch = barrier_flag
+        return barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_torch, barrier_flag_mc_torch
 
 def test_blockscaled_gemm_all_reduce_python_interface(
     lm: Tuple[int, int],
@@ -173,7 +175,7 @@ def test_blockscaled_gemm_all_reduce_python_interface(
     #     is_dynamic_layout=True,
     #     assumed_align=16,
     # )
-    c_tensor, c_tensor_mc, c_torch = create_mc_tensor(
+    c_tensor, c_tensor_mc, c_torch, c_torch_mc = create_mc_tensor(
         c_ref,
         get_cutlass_dtype(c_dtype),
         (1 if c_major == "n" else 0),
@@ -182,7 +184,7 @@ def test_blockscaled_gemm_all_reduce_python_interface(
     alpha_tensor = (
         torch.randn(l, dtype=torch.float32, device=device) if fuse_alpha else None
     )
-    barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_mc_ptr = create_barrier_flags(
+    barrier_flag_memref, barrier_flag_mc_memref, barrier_flag_torch, barrier_flag_mc_torch = create_barrier_flags(
         l*m,
         n,
         mma_tiler_mn,
@@ -240,8 +242,11 @@ def test_blockscaled_gemm_all_reduce_python_interface(
             dst_signals=dst_signals,
             all_reduce=all_reduce,
             out_mc=c_tensor_mc,
+            out_mc_torch=c_torch_mc,
             barrier_flag=barrier_flag_memref,
             barrier_flag_mc=barrier_flag_mc_memref,
+            barrier_flag_torch=barrier_flag_torch,
+            barrier_flag_mc_torch=barrier_flag_mc_torch,
         )
 
         if enable_dst_signals:
