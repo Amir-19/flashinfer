@@ -311,9 +311,7 @@ class BlockwiseGemmKernel:
             (tiled_mma.thr_id.shape,),
         )
 
-        # {$nv-internal-release begin}
         # TODO: get from args
-        # {$nv-internal-release end}
         self.scale_granularity_m = 1
         self.scale_granularity_n = 128
         self.scale_granularity_k = 128
@@ -1318,9 +1316,7 @@ class BlockwiseGemmKernel:
                             ),
                         )
                     )
-                    # {$nv-internal-release begin}
                     # TODO: Skip more unnecessary load
-                    # {$nv-internal-release end}
                     for i in cutlass.range_constexpr(cute.size(tApSFA, mode=[1])):
                         tApSFA[((0, 0), i, (0, 0))] = cute.elem_less(
                             tAcSFA_compact[(i)][0], mSFA_mkl.shape[0]
