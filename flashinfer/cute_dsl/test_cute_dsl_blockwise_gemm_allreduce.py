@@ -204,7 +204,6 @@ def run_blockwise_gemm_all_reduce_python_interface(
     use_2cta_instrs: bool,
     mma_tiler_mn: Tuple[int, int],
     cluster_shape_mn: Tuple[int, int],
-    sm_count: int,
     tolerance: float,
     iterations: int,
     all_reduce: str,
@@ -214,9 +213,34 @@ def run_blockwise_gemm_all_reduce_python_interface(
 ):
     torch.manual_seed(42)
     device = torch.device("cuda", rank)
+    major, minor = torch.cuda.get_device_capability(device)
+    if not (major == 10 and minor == 0):
+        pytest.skip("Cute-dsl backend is only supported on SM100.")
 
     l, m = lm
     k, n = kn
+    sm_count = get_num_sm(device)
+
+    if not BlockwiseGemmKernel.can_implement(
+        get_cutlass_dtype(ab_dtype),
+        get_cutlass_dtype(acc_dtype),
+        get_cutlass_dtype(c_dtype),
+        use_2cta_instrs,
+        mma_tiler_mn,
+        cluster_shape_mn,
+        m,
+        n,
+        k,
+        l,
+        a_major,
+        b_major,
+        c_major,
+        all_reduce,
+        group,
+    ):
+        pytest.skip(
+            f"Unsupported testcase {ab_dtype}, {sf_dtype}, {c_dtype}, {acc_dtype}, {use_2cta_instrs} ,{mma_tiler_mn}, {cluster_shape_mn}, {m}, {n}, {k}, {l}, {a_major}, {b_major}, {c_major}, {all_reduce}"
+        )
 
     (
         a_tensor,
@@ -251,6 +275,7 @@ def run_blockwise_gemm_all_reduce_python_interface(
         l,
         mma_tiler_mn,
         cluster_shape_mn,
+        use_2cta_instrs,
         sm_count,
     )
     
@@ -336,7 +361,6 @@ def _run_correctness_worker(
     use_2cta_instrs,
     mma_tiler_mn,
     cluster_shape_mn,
-    sm_count,
     tolerance,
     iterations,
     all_reduce,
@@ -371,7 +395,6 @@ def _run_correctness_worker(
             cluster_shape_mn=cluster_shape_mn,
             tolerance=tolerance,
             iterations=iterations,
-            sm_count=sm_count,
             all_reduce=all_reduce,
             rank=rank,
             world_size=world_size,
@@ -460,33 +483,6 @@ def test_cute_dsl_blockscaled_gemm_allreduce_two_shot(
         pytest.skip(
             f"world_size {world_size} is greater than available_gpus {available_gpus}"
         )
-    major, minor = torch.cuda.get_device_capability(torch.device("cuda:0"))
-    if not (major == 10 and minor == 0):
-        pytest.skip("Cute-dsl backend is only supported on SM100.")
-
-    l, m = lm
-    k, n = kn
-    sm_count = get_num_sm(torch.device("cuda:0"))
-
-    if not BlockwiseGemmKernel.can_implement(
-        get_cutlass_dtype(ab_dtype),
-        get_cutlass_dtype(acc_dtype),
-        get_cutlass_dtype(c_dtype),
-        use_2cta_instrs,
-        mma_tiler_mn,
-        cluster_shape_mn,
-        m,
-        n,
-        k,
-        l,
-        a_major,
-        b_major,
-        c_major,
-        all_reduce,
-    ):
-        pytest.skip(
-            f"Unsupported testcase {ab_dtype}, {sf_dtype}, {c_dtype}, {acc_dtype}, {use_2cta_instrs} ,{mma_tiler_mn}, {cluster_shape_mn}, {m}, {n}, {k}, {l}, {a_major}, {b_major}, {c_major}, {all_reduce}"
-        )
 
     print(f"Running test for world_size={world_size}")
     multi_process_parallel(
@@ -505,7 +501,6 @@ def test_cute_dsl_blockscaled_gemm_allreduce_two_shot(
             use_2cta_instrs,
             mma_tiler_mn,
             cluster_shape_mn,
-            sm_count,
             tolerance,
             iterations,
             all_reduce,

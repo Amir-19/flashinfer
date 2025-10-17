@@ -650,6 +650,9 @@ class BlockwiseGemmKernel:
             self.epi_tile,
             self.tile_sched_params,
             epilogue_op,
+            c_mc,
+            barrier_flag,
+            barrier_flag_mc,
         ).launch(
             grid=grid,
             block=[self.threads_per_cta, 1, 1],
@@ -2047,12 +2050,26 @@ class BlockwiseGemmKernel:
 
                 rank_id = self.rank_id
                 num_ranks = Int32(self.num_ranks)
-                lane_id = cute.arch.lane_idx()  # noqa
 
+                # Initialize tile_info_consumer_state (NOT tile_sched)
+                tile_info_consumer_state = pipeline.make_pipeline_state(
+                    pipeline.PipelineUserType.Consumer, self.num_tile_stage
+                )
+                # Get first tile from scheduler's initial work (same as other warps)
                 tile_sched = utils.StaticPersistentTileScheduler.create(
                     tile_sched_params, cute.arch.block_idx(), cute.arch.grid_dim()
                 )
                 work_tile = tile_sched.initial_work_tile_info()
+
+                # Get the first tile info
+                tile_info = cute.make_fragment(cute.make_layout((4,)).shape, cutlass.Int32)
+                tile_info[0] = work_tile.tile_idx[0]
+                tile_info[1] = work_tile.tile_idx[1]
+                tile_info[2] = work_tile.tile_idx[2]
+                tile_info[3] = work_tile.is_valid_tile
+
+                is_valid_tile = cutlass.Boolean(1)
+                is_valid_tile = tile_info[3] == 1
 
                 # we want 128bit ld/st for better performance
                 atom_val = 128 // c_mc.element_type.width
@@ -2075,7 +2092,13 @@ class BlockwiseGemmKernel:
                     tidx - self.all_reduce_warp_id[0] * 32
                 )
 
-                while work_tile.is_valid_tile:
+                while is_valid_tile:
+                    # Calculate tile_id using tile_sched for consistency
+                    tile_id = Int32(
+                        tile_sched._current_work_linear_idx
+                        * cute.size(self.cluster_shape_mn)
+                        + cute.arch.block_idx_in_cluster()
+                    )
                     cur_tile_coord = work_tile.tile_idx
                     tile_id = Int32(
                         tile_sched._current_work_linear_idx
@@ -2155,8 +2178,19 @@ class BlockwiseGemmKernel:
                                 )
                             distributed_helpers.multimem_st_4xb32(mc_ptr, x, y, z, w)
                     # Advance to next tile
+                    # tile_sched.advance_to_next_work()
+                    # work_tile = tile_sched.get_current_work()
+                    tile_info_pipeline.consumer_wait(tile_info_consumer_state)
+                    for idx in cutlass.range(4, unroll_full=True):
+                        tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
+                    is_valid_tile = tile_info[3] == 1
+                    cute.arch.fence_proxy(
+                        cute.arch.ProxyKind.async_shared,
+                        space=cute.arch.SharedSpace.shared_cta,
+                    )
+                    tile_info_pipeline.consumer_release(tile_info_consumer_state)
+                    tile_info_consumer_state.advance()
                     tile_sched.advance_to_next_work()
-                    work_tile = tile_sched.get_current_work()
 
                 cute.arch.barrier(
                     barrier_id=self.all_reduce_sync_bar_id,
@@ -3090,6 +3124,7 @@ class BlockwiseGemmCuteDSL:
             sfb_tensor,
             self._max_active_clusters,
             current_stream,
+            lambda x:x,
             c_mc_tensor,
             barrier_flag_tensor,
             barrier_flag_mc_tensor,
