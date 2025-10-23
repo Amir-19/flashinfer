@@ -222,7 +222,6 @@ class BlockwiseGemmKernel:
         self.sched_warp_id = 11
         self.all_reduce_warp_id: Tuple[int, ...] = ()
         if all_reduce != "none":
-            self.all_reduce = all_reduce
             self.all_reduce_warp_id = (12, 13, 14, 15)
         self.threads_per_warp = 32
         self.threads_per_cta = self.threads_per_warp * len(
@@ -236,7 +235,7 @@ class BlockwiseGemmKernel:
                 *self.all_reduce_warp_id,
             )
         )
-        #TODO(asamani): check if this is correct
+        #TODO(asamani): check if this is correct to include all_reduce warps here
         self.threads_wo_sched = self.threads_per_warp * len(
             (
                 *self.acc_update_warp_id,
@@ -244,13 +243,14 @@ class BlockwiseGemmKernel:
                 self.mma_warp_id,
                 self.tma_warp_id,
                 self.scale_warp_id,
-                *self.all_reduce_warp_id,
+                #*self.all_reduce_warp_id,
             )
         )
         self.num_regs_uniform_warps = 64
         self.num_regs_sched_warps = 64
         self.num_regs_epilogue_warps = 216
         self.num_regs_acc_update_warps = 216
+        # TODO(asamani): do we need all reduce regs?
 
         # Set barrier id for cta sync, epilogue sync and tmem ptr sync
         self.cta_sync_bar_id = 0
@@ -797,6 +797,7 @@ class BlockwiseGemmKernel:
             producer_group=epi_pipeline_producer_group,
             consumer_group=epi_pipeline_consumer_group,
         )
+        # TODO(asamani): check if this is correct to include all_reduce warps here
 
         # Initialize tile info pipeline (barrier) and states
         tile_info_pipeline_producer_group = pipeline.CooperativeGroup(
@@ -1983,11 +1984,13 @@ class BlockwiseGemmKernel:
                 #
                 epi_pipeline.consumer_release(epi_consumer_state)
                 epi_consumer_state.advance()
-
+                
                 #
                 # Allreduce
                 #
                 if cutlass.const_expr(self.all_reduce == "two_shot"):
+                    # TODO(asamani): important fix for the deadlock:
+                    # this tile_sched is not getting updated!  
                     tile_id = Int32(
                         tile_sched._current_work_linear_idx
                         * cute.size(self.cluster_shape_mn)
@@ -2001,7 +2004,6 @@ class BlockwiseGemmKernel:
                             cute.arch.fence_acq_rel_gpu()
                             distributed_helpers.spin_lock_multimem_arrive(flag)
                             cute.arch.fence_proxy(cute.arch.ProxyKind.alias)
-
                 #
                 # Advance to next tile
                 #
@@ -2038,38 +2040,38 @@ class BlockwiseGemmKernel:
             # Wait for C store complete
             #
             c_pipeline.producer_tail()
-
-        # ///////////////////////////////////////////////////////////////////////////////
+        #
         #  Allreduce warps
-        # ///////////////////////////////////////////////////////////////////////////////
+        #
         if cutlass.const_expr(self.all_reduce == "two_shot"):
             if warp_idx >= self.all_reduce_warp_id[0]:
-                # ///////////////////////////////////////////////////////////////////////////////
+                cute.arch.warpgroup_reg_alloc(self.num_regs_acc_update_warps)
+                #
                 # Add persistent tile loop
-                # ///////////////////////////////////////////////////////////////////////////////
-
+                #
                 rank_id = self.rank_id
                 num_ranks = Int32(self.num_ranks)
+                lane_id = cute.arch.lane_idx()  # noqa
 
-                # Initialize tile_info_consumer_state (NOT tile_sched)
-                tile_info_consumer_state = pipeline.make_pipeline_state(
-                    pipeline.PipelineUserType.Consumer, self.num_tile_stage
-                )
-                # Get first tile from scheduler's initial work (same as other warps)
                 tile_sched = utils.StaticPersistentTileScheduler.create(
                     tile_sched_params, cute.arch.block_idx(), cute.arch.grid_dim()
                 )
                 work_tile = tile_sched.initial_work_tile_info()
 
-                # Get the first tile info
+                # get the first tile info
                 tile_info = cute.make_fragment(cute.make_layout((4,)).shape, cutlass.Int32)
-                tile_info[0] = work_tile.tile_idx[0]
-                tile_info[1] = work_tile.tile_idx[1]
-                tile_info[2] = work_tile.tile_idx[2]
+                # Get tile coord from tile scheduler
+                cur_tile_coord = work_tile.tile_idx
+                # initialize the tile info
+                tile_info[0] = cur_tile_coord[0]
+                tile_info[1] = cur_tile_coord[1]
+                tile_info[2] = cur_tile_coord[2]
                 tile_info[3] = work_tile.is_valid_tile
 
                 is_valid_tile = cutlass.Boolean(1)
                 is_valid_tile = tile_info[3] == 1
+
+                num_prev_subtiles = cutlass.Int32(0)
 
                 # we want 128bit ld/st for better performance
                 atom_val = 128 // c_mc.element_type.width
@@ -2093,22 +2095,16 @@ class BlockwiseGemmKernel:
                 )
 
                 while is_valid_tile:
-                    # Calculate tile_id using tile_sched for consistency
-                    tile_id = Int32(
-                        tile_sched._current_work_linear_idx
-                        * cute.size(self.cluster_shape_mn)
-                        + cute.arch.block_idx_in_cluster()
-                    )
-                    cur_tile_coord = work_tile.tile_idx
+                    # cur_tile_coord = work_tile.tile_idx
                     tile_id = Int32(
                         tile_sched._current_work_linear_idx
                         * cute.size(self.cluster_shape_mn)
                         + cute.arch.block_idx_in_cluster()
                     )
                     mma_tile_coord_mnl = (
-                        cur_tile_coord[0] // cute.size(tiled_mma.thr_id.shape),
-                        cur_tile_coord[1],
-                        cur_tile_coord[2],
+                        tile_info[0] // cute.size(tiled_mma.thr_id.shape),
+                        tile_info[1],
+                        tile_info[2],
                     )
 
                     # System barrier to make sure that data from each GPU is in memory before allreduce
@@ -2178,20 +2174,16 @@ class BlockwiseGemmKernel:
                                 )
                             distributed_helpers.multimem_st_4xb32(mc_ptr, x, y, z, w)
                     # Advance to next tile
-                    # tile_sched.advance_to_next_work()
-                    # work_tile = tile_sched.get_current_work()
-                    tile_info_pipeline.consumer_wait(tile_info_consumer_state)
-                    for idx in cutlass.range(4, unroll_full=True):
-                        tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
-                    is_valid_tile = tile_info[3] == 1
-                    cute.arch.fence_proxy(
-                        cute.arch.ProxyKind.async_shared,
-                        space=cute.arch.SharedSpace.shared_cta,
-                    )
-                    tile_info_pipeline.consumer_release(tile_info_consumer_state)
-                    tile_info_consumer_state.advance()
                     tile_sched.advance_to_next_work()
-
+                    work_tile = tile_sched.get_current_work()
+                    cur_tile_coord = work_tile.tile_idx
+                    #for idx in cutlass.range(4, unroll_full=True):
+                        #tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
+                    tile_info[0] = cur_tile_coord[0]
+                    tile_info[1] = cur_tile_coord[1]
+                    tile_info[2] = cur_tile_coord[2]
+                    tile_info[3] = work_tile.is_valid_tile
+                    is_valid_tile = tile_info[3] == 1
                 cute.arch.barrier(
                     barrier_id=self.all_reduce_sync_bar_id,
                     number_of_threads=32 * len(self.all_reduce_warp_id),
