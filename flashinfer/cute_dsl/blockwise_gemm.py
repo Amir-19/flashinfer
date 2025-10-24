@@ -2007,6 +2007,7 @@ class BlockwiseGemmKernel:
                 #
                 # Advance to next tile
                 #
+                tile_sched.advance_to_next_work()
                 tile_info_pipeline.consumer_wait(tile_info_consumer_state)
                 for idx in cutlass.range(4, unroll_full=True):
                     tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
