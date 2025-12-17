@@ -24,6 +24,8 @@ from typing_extensions import deprecated
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
+import torch.distributed._symmetric_memory as symm_mem
+from torch.distributed._symmetric_memory import _SymmetricMemory
 
 from ..jit.comm import gen_trtllm_comm_module
 from ..utils import register_custom_op, round_up
@@ -396,6 +398,31 @@ OneShotMaxToken = 128
 MAX_ALL_REDUCE_BLOCKS = 24
 LamportTokenNumThreshold = 16
 
+_symm_workspace_refs: dict[int, list[torch.Tensor]] = {}
+def create_symmetric_memory_workspace(
+    aligned_size: int,
+    group: Optional[ProcessGroup] = None,
+    dtype: torch.dtype = torch.float16,
+) -> _SymmetricMemory:
+  group_name = group.group_name
+  symm_tensor = symm_mem.empty(aligned_size//dtype.itemsize, dtype=dtype)
+  hdl = symm_mem.rendezvous(symm_tensor, group=group_name)
+  mc_ptr = hdl.multicast_ptr
+  buffer_ptrs = hdl.buffer_ptrs
+  return hdl
+
+def _alloc_symm_buffer_bytes(
+    size_bytes: int, tp_size: int, dtype: torch.dtype, device: torch.device, group_name: str
+) -> tuple[list[int], torch.Tensor]:
+    numel = size_bytes // torch.tensor([], dtype=dtype).element_size()
+    tensor = symm_mem.empty(numel, dtype=dtype, device=device)
+    handle = symm_mem.rendezvous(tensor, group=group_name)
+    ptrs: list[int] = []
+    for peer in range(tp_size):
+        buf = handle.get_buffer(peer, (numel,), dtype, storage_offset=0)
+        ptrs.append(buf.data_ptr())
+    return ptrs, tensor, handle
+
 
 @deprecated(
     "trtllm_create_ipc_workspace_for_all_reduce and trtllm_custom_all_reduce are deprecated, use trtllm_create_ipc_workspace_for_all_reduce_fusion and trtllm_allreduce_fusion instead"
@@ -447,26 +474,38 @@ def trtllm_create_ipc_workspace_for_all_reduce(
     FLAG_SIZE = (MAX_ALL_REDUCE_BLOCKS + 1) * 4
     flag_size = FLAG_SIZE * tp_size * 2
     lamport_buffer_size = tp_size * LamportTokenNumThreshold * tp_size * hidden_dim * 2
-
+    device = torch.device(f"cuda:{torch.cuda.current_device()}")
+    group_name = group.group_name
+    symm_refs: list[torch.Tensor] = []
     ipc_handles = list()
 
-    for size in [
-        buffer_size,
-        buffer_size,
-        flag_size,
-        flag_size,
-        lamport_buffer_size,
-        lamport_buffer_size,
-        lamport_buffer_size,
+    for size, dtype in [
+        (buffer_size, torch.float32),
+        (buffer_size, torch.float32),
+        (flag_size, torch.int32),
+        (flag_size, torch.int32),
+        (lamport_buffer_size, torch.float16),
+        (lamport_buffer_size, torch.float16),
+        (lamport_buffer_size, torch.float16),
     ]:
         # all sizes should be aligned to 1LU << 21 bytes (2MB)
         aligned_size = round_up(size, 1 << 21)
-        ipc_handles.append(create_shared_buffer(aligned_size, group))
-
+        #ipc_handles.append(create_shared_buffer(aligned_size, group))
+        #ipc_handles.append(create_symmetric_memory_workspace(aligned_size, group))
+        
+        ptrs, tensor, handle = _alloc_symm_buffer_bytes(
+            aligned_size,
+            tp_size,
+            dtype,
+            device,
+            group_name,
+        )
+        symm_refs.append((tensor, handle))
+        ipc_handles.append(ptrs)
     print(
         f"rank {rank} allocated ipc_handles: {[[hex(handle) for handle in sublist] for sublist in ipc_handles]}"
     )
-
+    _symm_workspace_refs[id(ipc_handles)] = symm_refs
     trtllm_lamport_initialize_all(
         ipc_handles[4][rank],
         ipc_handles[5][rank],
@@ -490,9 +529,9 @@ def trtllm_destroy_ipc_workspace_for_all_reduce(
     The workspace should be destroyed after calling trtllm_custom_all_reduce.
     The workspace can be reused for multiple all reduce calls under the same configuration.
     """
-
-    for ipc_handle in workspace:
-        free_shared_buffer(ipc_handle, group)
+    symm_refs = _symm_workspace_refs.pop(id(workspace), None)
+    # for ipc_handle in workspace:
+    #     free_shared_buffer(ipc_handle, group)
 
 
 BarrierFlagCount = 256
