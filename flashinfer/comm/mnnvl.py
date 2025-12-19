@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import pynvml
 
 import torch
+import torch.distributed._symmetric_memory as symm_mem
 
 try:
     # cuda-python >= 12.9 (has cuda.bindings.driver)
@@ -56,6 +57,19 @@ OMPI_COMM_TYPE_HOST = 9
 SIGNAL_PAD_SIZE = 2048  # kSIGNAL_PAD_SIZE from header
 
 MNNVL_DEBUG = False
+
+
+def _alloc_symm_buffer_bytes(
+    size_bytes: int, tp_size: int, dtype: torch.dtype, device: torch.device, group_name: str
+) -> tuple[list[int], torch.Tensor]:
+    numel = size_bytes // torch.tensor([], dtype=dtype).element_size()
+    tensor = symm_mem.empty(numel, dtype=dtype, device=device)
+    handle = symm_mem.rendezvous(tensor, group=group_name)
+    ptrs: list[int] = []
+    for peer in range(tp_size):
+        buf = handle.get_buffer(peer, (numel,), dtype, storage_offset=0)
+        ptrs.append(buf.data_ptr())
+    return ptrs, tensor, handle
 
 
 def round_up(val: int, gran: int) -> int:
