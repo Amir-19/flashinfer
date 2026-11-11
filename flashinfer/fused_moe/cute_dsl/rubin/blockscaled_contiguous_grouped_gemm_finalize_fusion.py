@@ -189,6 +189,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         topK: int = 1,
         enable_pdl: Optional[bool] = None,
         use_fused_finalize: bool = True,
+        use_a_per_token_scale: bool = False,  # flashinfer
     ):
         # flashinfer dispatcher compatibility: the pre-sync kernel took
         # `enable_pdl`; the TRT-LLM version has no PDL path, so the value is
@@ -202,6 +203,10 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         self.raster_along_m = raster_along_m
         self.topK = topK
         self.use_fused_finalize = use_fused_finalize
+        # flashinfer: per-row operand-A scale (shape (permuted_m,)), folded into the
+        # per-row alpha (next to the router scale when finalize is fused). TRT-LLM
+        # has no per-token activation scale; keep this when re-syncing.
+        self.use_a_per_token_scale = use_a_per_token_scale
 
         self.use_2cta_instrs = mma_inst_shape[0] == 256
         self.cta_group = tcgen05.CtaGroup.TWO if self.use_2cta_instrs else tcgen05.CtaGroup.ONE
@@ -608,6 +613,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         permuted_idx_to_expanded_idx: cute.Tensor,
         token_final_scales: cute.Tensor,
         epilogue_op: cutlass.Constexpr = lambda x: x,
+        a_per_token_scale: Optional[cute.Tensor] = None,  # flashinfer
     ):
         """Execute the contiguous grouped GEMM with finalize fusion.
 
@@ -889,6 +895,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
             self.epi_tile,
             self.tile_sched_params,
             epilogue_op,
+            a_per_token_scale,  # flashinfer
         ).launch(
             grid=grid,
             block=[self.threads_per_cta, 1, 1],
@@ -933,6 +940,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         epi_tile: cute.Tile,
         tile_sched_params: utils.PersistentTileSchedulerParams,
         epilogue_op: cutlass.Constexpr,
+        a_per_token_scale: Optional[cute.Tensor] = None,  # flashinfer
     ):
         """GPU device kernel for contiguous grouped GEMM with finalize fusion."""
         warp_idx = cute.arch.warp_idx()
@@ -1613,6 +1621,10 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
                             topk_idx = expanded_idx % self.topK
                             token_scale = token_final_scales[(token_idx, topk_idx)]
                             alpha_val_iter = alpha_val * token_scale
+                    # flashinfer: per-token activation scale of this row.
+                    if cutlass.const_expr(self.use_a_per_token_scale):
+                        if is_valid_row:
+                            alpha_val_iter = alpha_val_iter * a_per_token_scale[permuted_row]
 
                     for n_iter_idx in cutlass.range(n_subtile_cnt):
                         # Load accumulator from tensor memory buffer to register
@@ -1912,6 +1924,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
         c_stride_row: cutlass.Int64 = cutlass.Int64(0),
+        a_per_token_scale_ptr: Optional[cute.Pointer] = None,  # flashinfer
     ):
         scale_k = k // scaling_vector_size
         num_tiles = m // tile_size
@@ -1958,6 +1971,12 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
             token_final_scales_ptr,
             layout=cute.make_ordered_layout((num_tokens, top_k), order=(1, 0)),
         )
+        # flashinfer: per-row operand-A scale, indexed by permuted row: shape (m,).
+        a_per_token_scale = (
+            cute.make_tensor(a_per_token_scale_ptr, layout=cute.make_layout((m,)))
+            if cutlass.const_expr(a_per_token_scale_ptr is not None)
+            else None
+        )
 
         return self(
             a,
@@ -1974,6 +1993,7 @@ class Sm107BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
             permuted_idx_to_expanded_idx=permuted_idx_to_expanded_idx,
             token_final_scales=token_final_scales,
             epilogue_op=epilogue_op,
+            a_per_token_scale=a_per_token_scale,  # flashinfer
         )
 
     @staticmethod

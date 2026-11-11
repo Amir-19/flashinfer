@@ -368,13 +368,6 @@ def _get_compiled_gather_kernel(
                     "grouped GEMM kernel for plain SwiGLU only, not for SiTU "
                     "or Relu2."
                 )
-            if use_a_per_token_scale:
-                raise NotImplementedError(
-                    "use_a_per_token_scale (per-token activation scale) is "
-                    "not supported by the Rubin (SM107) gather grouped GEMM "
-                    "kernel yet: its wrapper has no a_per_token_scale_ptr "
-                    "parameter."
-                )
             gemm = _sm107_swiglu_kernel_cls()(
                 sf_vec_size=sf_vec_size,
                 mma_inst_shape=mma_inst_shape,
@@ -389,6 +382,7 @@ def _get_compiled_gather_kernel(
                 situ_beta=situ_beta,
                 situ_linear_beta=situ_linear_beta,
                 swiglu_limit=sm107_swiglu_limit,
+                use_a_per_token_scale=use_a_per_token_scale,
             )
         else:
             # Create kernel instance
@@ -414,9 +408,10 @@ def _get_compiled_gather_kernel(
         # Compile with runtime parameters - they can vary across calls.
         # Order must match the wrapper signature, and the two wrappers have
         # DIFFERENT arities: the Blackwell wrapper takes a_per_token_scale_ptr
-        # and clamped_relu2_limit_ptr (14 pointers), the Rubin SM107 wrapper
-        # takes neither (12 pointers).
-        # Passing 13 pointers to the SM107 wrapper shifts every argument one
+        # and clamped_relu2_limit_ptr positionally (14 pointers); the Rubin
+        # SM107 wrapper takes 12 pointers positionally and a_per_token_scale_ptr
+        # as a keyword (only when used).
+        # Passing extra pointers to the SM107 wrapper shifts every argument one
         # slot and dies with "multiple values for argument 'tile_size'".
         # (a_ptr, b_ptr, a_sf_ptr, b_sf_ptr, c_ptr, c_sf_ptr, alpha_ptr,
         #  tile_idx_to_group_idx_ptr, tile_idx_to_mn_limit_ptr, token_id_mapping_ptr,
@@ -452,6 +447,11 @@ def _get_compiled_gather_kernel(
                 {
                     "c_stride_m": cutlass.Int64(0),
                     "c_sf_n_tile_offset": cutlass.Int64(0),
+                    **(
+                        {"a_per_token_scale_ptr": a_per_token_scale_ptr}
+                        if use_a_per_token_scale
+                        else {}
+                    ),
                 }
                 if is_rubin
                 else {}
@@ -1002,9 +1002,9 @@ def blockscaled_contiguous_gather_grouped_gemm_act_fusion(
     )
 
     # Execute kernel with runtime parameters.
-    # Order must match the wrapper signature; the Rubin SM107 wrapper has no
-    # a_per_token_scale_ptr parameter (see the arity note at the compile site),
-    # so on Rubin the extra pointer must be omitted here too or every argument
+    # Order must match the wrapper signature; the Rubin SM107 wrapper takes
+    # a_per_token_scale_ptr as a keyword (see the arity note at the compile
+    # site), so on Rubin it must not be passed positionally or every argument
     # shifts one slot ("multiple values for argument 'stream'").
     # (a_ptr, b_ptr, a_sf_ptr, b_sf_ptr, c_ptr, c_sf_ptr, alpha_ptr,
     #  tile_idx_ptr, mn_limit_ptr, token_id_ptr, num_tiles_ptr, global_sf_ptr,
@@ -1035,6 +1035,11 @@ def blockscaled_contiguous_gather_grouped_gemm_act_fusion(
             {
                 "c_stride_m": c_stride_m_val,
                 "c_sf_n_tile_offset": c_sf_n_tile_offset_val,
+                **(
+                    {"a_per_token_scale_ptr": a_per_token_scale_ptr}
+                    if use_a_per_token_scale
+                    else {}
+                ),
             }
             if is_rubin
             else {}

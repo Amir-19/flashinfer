@@ -32,7 +32,10 @@
 # at commit ef34db4 (2026-09-22). FlashInfer-specific adaptations are marked
 # with "flashinfer" comments: the ActivationType import, the `enable_pdl` /
 # `ugpu_half_gemm` constructor aliases, the SiTU request convention shared with
-# the Blackwell kernel, and the optional `situ_linear_beta`.
+# the Blackwell kernel, the optional `situ_linear_beta`, and the per-token
+# activation scale (`use_a_per_token_scale` / `a_per_token_scale_ptr`, with
+# optional `c_sf_ptr` / `global_sf_ptr` for the BF16 output it needs). TRT-LLM has
+# no per-token activation scale; keep it when re-syncing.
 
 import argparse
 import os
@@ -259,6 +262,8 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         swiglu_limit: float = float("inf"),
         enable_pdl: Optional[bool] = None,
         ugpu_half_gemm: Optional[bool] = None,
+        # flashinfer: per-token activation scale.
+        use_a_per_token_scale: bool = False,
     ):
         # flashinfer dispatcher compatibility: the pre-sync kernel took
         # `enable_pdl`; TRT-LLM renamed it to `use_pdl`. Explicit enable_pdl
@@ -312,6 +317,11 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
                 "swiglu_limit applies to ActivationType.Swiglu only; "
                 f"got {self.activation_type.name} with swiglu_limit={self.swiglu_limit}."
             )
+        # flashinfer: per-token activation scale (row scale on operand A, indexed
+        # by the original token id), folded into the per-row alpha in the epilogue.
+        self.use_a_per_token_scale = use_a_per_token_scale
+        # The epilogue also needs tile_info[4] (mn_limit) to skip padding rows.
+        self.epi_tile_info_len = 5 if use_a_per_token_scale else 4
         self.is_gated = is_gated_activation(self.activation_type)
         if locality_domain_half_gemm and not self.is_gated:
             raise ValueError("Rubin locality domain half-GEMM currently supports SwiGLU only")
@@ -520,6 +530,13 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
             self.mma_tiler[1],
             self.mma_tiler[2],
         )
+        if cutlass.const_expr(self.use_a_per_token_scale):
+            # flashinfer: the per-token epilogue maps one epilogue thread to one tile row.
+            if self.cta_tile_shape_mnk[0] != 128:
+                raise ValueError(
+                    "use_a_per_token_scale requires a 128-row CTA tile, got "
+                    f"{self.cta_tile_shape_mnk[0]}"
+                )
 
         # Number of CpAsync128.CG loads per thread for A matrix (each loads 16 M-rows)
         self.a_num_loads = self.cta_tile_shape_mnk[0] // 16
@@ -822,6 +839,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
         c_sf_n_tile_offset: cutlass.Int64 = cutlass.Int64(0),
+        a_per_token_scale: Optional[cute.Tensor] = None,  # flashinfer
     ):
         """Execute the contiguous grouped GEMM with gather operation and SwiGLU fusion.
 
@@ -1270,6 +1288,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
             self.tile_sched_params,
             epilogue_op,
             c_sf_n_tile_offset,
+            a_per_token_scale,  # flashinfer
         ).launch(
             grid=grid,
             block=[self.threads_per_cta, 1, 1],
@@ -1361,6 +1380,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         tile_sched_params: utils.PersistentTileSchedulerParams,
         epilogue_op: cutlass.Constexpr,
         c_sf_n_tile_offset: cutlass.Int64 = cutlass.Int64(0),
+        a_per_token_scale: Optional[cute.Tensor] = None,  # flashinfer
     ):
         """
         GPU device kernel performing the Persistent batched GEMM computation.
@@ -2993,10 +3013,11 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
             )
 
             # Get the first tile info
-            tile_info = cute.make_rmem_tensor((4,), cutlass.Int32)
+            # flashinfer: 5 entries (adds mn_limit) with per-token scaling, else 4.
+            tile_info = cute.make_rmem_tensor((self.epi_tile_info_len,), cutlass.Int32)
 
             tile_info_pipeline.consumer_wait(tile_info_consumer_state)
-            for idx in cutlass.range(4, unroll_full=True):
+            for idx in cutlass.range(self.epi_tile_info_len, unroll_full=True):
                 tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
             is_valid_tile = tile_info[3] == 1
             cute.arch.fence_proxy(
@@ -3019,6 +3040,16 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
 
                 expert_idx = mma_tile_coord_mnl[2]
                 alpha_val = alpha[expert_idx]
+                if cutlass.const_expr(self.use_a_per_token_scale):
+                    # flashinfer: fold the per-token activation scale of this thread's row into alpha.
+                    # Each epilogue thread owns one TMEM lane = one row of the CTA tile;
+                    # tile_info[4] is the tile's mn_limit (rows past it are padding).
+                    tile_m_start = tile_info[0] * self.cta_tile_shape_mnk[0]
+                    permuted_row = tile_m_start + epi_tidx
+                    if permuted_row < tile_info[4]:
+                        expanded_idx = token_id_mapping_tensor[permuted_row]
+                        token_idx = expanded_idx // self.topk
+                        alpha_val = alpha_val * a_per_token_scale[token_idx]
 
                 #
                 # Slice to per mma tile index
@@ -3315,7 +3346,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
                 # Advance to next tile
                 #
                 tile_info_pipeline.consumer_wait(tile_info_consumer_state)
-                for idx in cutlass.range(4, unroll_full=True):
+                for idx in cutlass.range(self.epi_tile_info_len, unroll_full=True):
                     tile_info[idx] = sInfo[(idx, tile_info_consumer_state.index)]
                 is_valid_tile = tile_info[3] == 1
                 cute.arch.fence_proxy(
@@ -4192,13 +4223,13 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         a_sf_ptr: cute.Pointer,
         b_sf_ptr: cute.Pointer,
         c_ptr: cute.Pointer,
-        c_sf_ptr: cute.Pointer,
+        c_sf_ptr: Optional[cute.Pointer],  # flashinfer: None for BF16 C
         alpha_ptr: cute.Pointer,
         tile_idx_to_group_idx_ptr: cute.Pointer,
         tile_idx_to_mn_limit_ptr: cute.Pointer,
         token_id_mapping_ptr: cute.Pointer,
         num_non_exiting_tiles_ptr: cute.Pointer,
-        global_sf_ptr: cute.Pointer,
+        global_sf_ptr: Optional[cute.Pointer],  # flashinfer: None for BF16 C
         orig_m: cutlass.Int64,
         m: cutlass.Int64,
         n: cutlass.Int64,
@@ -4211,6 +4242,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         epilogue_op: cutlass.Constexpr = lambda x: x,
         c_stride_m: cutlass.Int64 = cutlass.Int64(0),
         c_sf_n_tile_offset: cutlass.Int64 = cutlass.Int64(0),
+        a_per_token_scale_ptr: Optional[cute.Pointer] = None,  # flashinfer
     ):
         scale_k = k // scaling_vector_size
         interm_size = n // 2 if self.is_gated else n
@@ -4250,12 +4282,18 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         else:
             full_interm_size = 2 * interm_size
             full_c_shape = cute.make_ordered_layout((m, full_interm_size, 1), order=(0, 1, 2)).shape
-        c_sf = cute.make_tensor(
-            c_sf_ptr,
-            layout=cute.make_ordered_layout(
-                (32, 4, m // 128, 4, interm_size // (scaling_vector_size * 4), l),
-                order=(2, 1, 4, 0, 3, 5),
-            ),
+        # flashinfer: c_sf / global_sf are None when the output is not quantized (BF16 C, as
+        # in the per-token activation path, which quantizes C separately).
+        c_sf = (
+            cute.make_tensor(
+                c_sf_ptr,
+                layout=cute.make_ordered_layout(
+                    (32, 4, m // 128, 4, interm_size // (scaling_vector_size * 4), l),
+                    order=(2, 1, 4, 0, 3, 5),
+                ),
+            )
+            if cutlass.const_expr(c_sf_ptr is not None)
+            else None
         )
         alpha = cute.make_tensor(alpha_ptr, layout=cute.make_layout((l,)))
 
@@ -4269,7 +4307,17 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
         num_non_exiting_tiles = cute.make_tensor(
             num_non_exiting_tiles_ptr, layout=cute.make_layout((1,))
         )
-        global_sf = cute.make_tensor(global_sf_ptr, layout=cute.make_layout((1,)))
+        global_sf = (
+            cute.make_tensor(global_sf_ptr, layout=cute.make_layout((1,)))
+            if cutlass.const_expr(global_sf_ptr is not None)
+            else None
+        )
+        # flashinfer: per-token activation scale, indexed by original token id: shape (orig_m,).
+        a_per_token_scale = (
+            cute.make_tensor(a_per_token_scale_ptr, layout=cute.make_layout((orig_m,)))
+            if cutlass.const_expr(a_per_token_scale_ptr is not None)
+            else None
+        )
 
         return self(
             a,
@@ -4289,6 +4337,7 @@ class Sm107BlockScaledContiguousGatherGroupedGemmSwigluFusionKernel:
             stream=stream,
             epilogue_op=epilogue_op,
             c_sf_n_tile_offset=c_sf_n_tile_offset,
+            a_per_token_scale=a_per_token_scale,  # flashinfer
         )
 
 

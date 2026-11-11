@@ -555,8 +555,8 @@ def _moe_core_impl(
             )
         if use_per_token_activation:
             raise NotImplementedError(
-                "locality-domain localization does not support per-token activation scales: "
-                "the Rubin gather kernel has no a_per_token_scale_ptr parameter."
+                "locality-domain localization does not support per-token activation "
+                "scales yet."
             )
         if not use_fused_finalize:
             raise NotImplementedError(

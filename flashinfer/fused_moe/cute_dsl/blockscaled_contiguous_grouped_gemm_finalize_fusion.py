@@ -264,13 +264,6 @@ def _get_compiled_finalize_kernel(
 
     if cache_key not in _finalize_kernel_cache:
         if is_rubin:
-            if use_a_per_token_scale:
-                raise NotImplementedError(
-                    "use_a_per_token_scale (per-token activation scale) is "
-                    "not supported by the Rubin (SM107) finalize grouped "
-                    "GEMM kernel yet: its wrapper has no "
-                    "a_per_token_scale_ptr parameter."
-                )
             if final_scale_dtype is not cutlass.Float32:
                 # The Rubin kernel hardcodes self.final_scale_dtype =
                 # cutlass.Float32; its can_implement never sees this dtype.
@@ -288,6 +281,7 @@ def _get_compiled_finalize_kernel(
                 topK=topk,
                 enable_pdl=enable_pdl,
                 use_fused_finalize=use_fused_finalize,
+                use_a_per_token_scale=use_a_per_token_scale,
             )
             wrapper_fn = gemm_rubin.wrapper  # type: ignore[attr-defined]
         else:
@@ -305,7 +299,8 @@ def _get_compiled_finalize_kernel(
         # Compile with runtime parameters - they can vary across calls.
         # Order must match the wrapper signature, and the two wrappers have
         # DIFFERENT arities: the Blackwell wrapper takes a_per_token_scale_ptr
-        # (12 pointers), the Rubin SM107 wrapper does not (11 pointers).
+        # positionally (12 pointers); the Rubin SM107 wrapper takes 11 pointers
+        # positionally and a_per_token_scale_ptr as a keyword (only when used).
         # Passing the extra pointer to the SM107 wrapper shifts every argument
         # one slot ("multiple values for argument 'tile_size'").
         # (a_ptr, b_ptr, a_sf_ptr, b_sf_ptr, c_ptr, alpha_ptr,
@@ -339,7 +334,18 @@ def _get_compiled_finalize_kernel(
             max_active_clusters=max_active_clusters,
             stream=stream,
             # Rubin strides must be runtime Int64s, not Python constexprs.
-            **({"c_stride_row": cutlass.Int64(0)} if is_rubin else {}),
+            **(
+                {
+                    "c_stride_row": cutlass.Int64(0),
+                    **(
+                        {"a_per_token_scale_ptr": a_per_token_scale_ptr}
+                        if use_a_per_token_scale
+                        else {}
+                    ),
+                }
+                if is_rubin
+                else {}
+            ),
         )
 
         _finalize_kernel_cache[cache_key] = compiled_gemm
@@ -730,9 +736,9 @@ def blockscaled_contiguous_grouped_gemm_finalize_fusion(
     )
 
     # Execute kernel with runtime parameters.
-    # Order must match the wrapper signature; the Rubin SM107 wrapper has no
-    # a_per_token_scale_ptr parameter (see the arity note at the compile site),
-    # so on Rubin the extra pointer must be omitted here too.
+    # Order must match the wrapper signature; the Rubin SM107 wrapper takes
+    # a_per_token_scale_ptr as a keyword (see the arity note at the compile
+    # site), so on Rubin it must not be passed positionally.
     # (a_ptr, b_ptr, a_sf_ptr, b_sf_ptr, c_ptr, alpha_ptr, tile_idx_ptr,
     #  mn_limit_ptr, permuted_idx_ptr, num_tiles_ptr, token_scales_ptr,
     #  [a_per_token_scale_ptr], m, n, k, l, num_tokens, top_k, stream)
@@ -757,7 +763,18 @@ def blockscaled_contiguous_grouped_gemm_finalize_fusion(
         topk,
         stream=stream,
         # Match the runtime stride traced by the Rubin wrapper.
-        **({"c_stride_row": c_stride_row_val} if is_rubin else {}),
+        **(
+            {
+                "c_stride_row": c_stride_row_val,
+                **(
+                    {"a_per_token_scale_ptr": a_per_token_scale_ptr}
+                    if use_a_per_token_scale
+                    else {}
+                ),
+            }
+            if is_rubin
+            else {}
+        ),
     )
 
     return out

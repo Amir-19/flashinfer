@@ -82,9 +82,9 @@ def _skip_sm107_unimplemented_moe_features(request):
 
     ``fused_moe/cute_dsl/rubin/`` holds a narrower specialisation of the
     Blackwell kernels rather than a port of them: the gather kernel implements
-    SwiGLU (including its SiTU variant and a clamp limit) and Relu2 but not
-    GeGLU-tanh or custom SwiGLU alpha/beta constants, and its wrapper has no
-    ``a_per_token_scale_ptr``. The wrappers raise ``NotImplementedError`` for
+    SwiGLU (including its SiTU variant and a clamp limit), Relu2 and per-token
+    activation scales, but not GeGLU-tanh or custom SwiGLU alpha/beta
+    constants. The wrappers raise ``NotImplementedError`` for
     these cases, which is correct behaviour -- but on Rubin it reports as a
     test failure on every CI sweep, for features the kernels were never built
     to have.
@@ -113,12 +113,6 @@ def _skip_sm107_unimplemented_moe_features(request):
     if params.get("quant_mode") == "w4a16":
         return
 
-    if params.get("use_per_token_activation"):
-        pytest.skip(
-            "SM107 gather grouped GEMM has no a_per_token_scale pointer "
-            "(11 wrapper pointers vs Blackwell's 12)"
-        )
-
     if params.get("activation_type") == ActivationType.GegluTanh:
         pytest.skip("SM107 gather grouped GEMM does not implement GeGLU-tanh")
 
@@ -129,13 +123,6 @@ def _skip_sm107_unimplemented_moe_features(request):
     # kernel, and passes on SM107 -- a substring match silently dropped it.
     if request.node.function.__name__ == "test_geglu_tanh_accuracy":
         pytest.skip("SM107 gather grouped GEMM does not implement GeGLU-tanh")
-
-    # Pins the recipe through the per-token path, which SM107 does not have.
-    if request.node.function.__name__ == "test_cute_dsl_pinned_recipe_matches_env":
-        pytest.skip(
-            "SM107 gather grouped GEMM has no a_per_token_scale pointer "
-            "(11 wrapper pointers vs Blackwell's 12)"
-        )
 
 
 def is_sm100_family():
