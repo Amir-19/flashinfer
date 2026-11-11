@@ -82,8 +82,8 @@ def _skip_sm107_unimplemented_moe_features(request):
 
     ``fused_moe/cute_dsl/rubin/`` holds a narrower specialisation of the
     Blackwell kernels rather than a port of them: the gather kernel implements
-    SwiGLU (including its SiTU variant and a clamp limit) and Relu2 but not
-    GeGLU-tanh or custom SwiGLU alpha/beta constants, and its wrapper has no
+    SwiGLU (including its SiTU variant, a clamp limit and custom alpha/beta
+    constants) and Relu2 but not GeGLU-tanh, and its wrapper has no
     ``a_per_token_scale_ptr``. The wrappers raise ``NotImplementedError`` for
     these cases, which is correct behaviour -- but on Rubin it reports as a
     test failure on every CI sweep, for features the kernels were never built
@@ -3084,11 +3084,6 @@ class TestCuteDslFusedMoeFunctional:
         """Test functional API with autotune context."""
         if swap_ab and is_sm107():
             pytest.skip("swap_ab requires Blackwell SM100 or SM103")
-        if is_sm107() and quant_mode == "w4a4":
-            pytest.skip(
-                "Rubin (SM107) cute-dsl MoE kernels do not implement custom "
-                "SwiGLU constants (swiglu_alpha/beta)"
-            )
         from flashinfer import autotune
         from flashinfer import cute_dsl_fused_moe
         from flashinfer.autotuner import AutoTuner
@@ -3148,11 +3143,6 @@ class TestCuteDslFusedMoeFunctional:
     @pytest.mark.parametrize("quant_mode", _MOE_QUANT_MODES)
     def test_swiglu_oai_accuracy(self, quant_mode: str):
         """Accuracy test for the OAI SwiGLU epilogue variant."""
-        if is_sm107() and quant_mode == "w4a4":
-            pytest.skip(
-                "Rubin (SM107) cute-dsl MoE kernels do not implement custom "
-                "SwiGLU constants (swiglu_alpha/beta)"
-            )
         from flashinfer import cute_dsl_fused_moe
 
         num_tokens, hidden_size, intermediate_size = 128, 256, 512
@@ -3379,11 +3369,6 @@ class TestCuteDslMoEWrapper:
     @pytest.mark.parametrize("quant_mode", _MOE_QUANT_MODES)
     def test_wrapper_swiglu_oai_accuracy(self, quant_mode: str):
         """Accuracy test for wrapper API with OAI SwiGLU."""
-        if is_sm107() and quant_mode == "w4a4":
-            pytest.skip(
-                "Rubin (SM107) cute-dsl MoE kernels do not implement custom "
-                "SwiGLU constants (swiglu_alpha/beta)"
-            )
         from flashinfer import CuteDslMoEWrapper
 
         num_tokens, hidden_size, intermediate_size = 128, 256, 512
@@ -3462,11 +3447,6 @@ class TestCuteDslMoEWrapper:
         swap_ab: bool,
     ):
         """Test wrapper API with CUDA graph capture and replay."""
-        if is_sm107() and quant_mode == "w4a4":
-            pytest.skip(
-                "Rubin (SM107) cute-dsl MoE kernels do not implement custom "
-                "SwiGLU constants (swiglu_alpha/beta)"
-            )
         from flashinfer import CuteDslMoEWrapper
 
         hidden_size, intermediate_size = 256, 512
@@ -3760,11 +3740,6 @@ class TestCuteDslMoEWrapper:
     def test_cuda_graph_wrapper_lifetime_after_autotune(self):
         """Dropped CUDA graph wrappers should not wait for cyclic GC,
         even after autotune profiling has populated the autotuner cache."""
-        if is_sm107():
-            pytest.skip(
-                "Rubin (SM107) cute-dsl MoE kernels do not implement custom "
-                "SwiGLU constants (swiglu_alpha/beta)"
-            )
         from flashinfer import autotune
         from flashinfer import CuteDslMoEWrapper
         from flashinfer.autotuner import AutoTuner
